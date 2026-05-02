@@ -8,6 +8,53 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 The entire 0.x range was developed iteratively in a single working session
 (2026-05-02) — versions are very granular by design.
 
+## [0.20.0] - 2026-05-02
+### Changed
+- Chart visualization is now theme-independent. The chart panel and the
+  sidebar mini-chart "island" use a fixed dark palette (background, borders,
+  axis labels, grid, day-boundary dashes) regardless of the VS Code skin.
+  The chart's white-on-dark dashes and low-alpha grid lines were tuned for a
+  dark backdrop and were unreadable on light themes. The rest of the sidebar
+  (stats text, progress bars, "Last fetched" line) still follows the VS Code
+  theme.
+
+## [0.19.0] - 2026-05-02
+### Added
+- Sidebar mini chart is now clickable — click anywhere on it to open the full
+  chart panel (same as the toolbar `Show chart` button). The empty/error
+  placeholders are also clickable, so you can jump to the chart even when the
+  current Day window has no data.
+
+## [0.18.0] - 2026-05-02
+### Added
+- Hook invocation log at `~/.claude/claude-usage-monitor-hook.invocations.log`.
+  One structured line per hook run, with parts like `start | stdin=3b |
+  token=present | mode=ok 5h=23.0% wk=28.0% | wrote=101b | dur=351ms`. Self-
+  rotates when it grows past 100 KB (keeps the last 100 lines). Lets you see
+  whether Claude Code actually invokes the hook — the most common
+  "doesn't work" cause is a stale Claude Code session that never picked up
+  the new `settings.json`.
+- `Claude Usage: Show hook invocation log` command.
+- Troubleshooting section in README: full Claude Code restart may be needed
+  (not just `Developer: Reload Window`); guidance on reading the invocation
+  log to find what went wrong.
+
+### Changed
+- **Removed all silent `try { … } catch {}` blocks in the hook.** Every error
+  now has an explicit failure mode that lands in the invocation log and/or
+  `process.stderr`: `creds-missing`, `creds-parse-error`, `creds-no-token`,
+  `api-http=<code>`, `api-timeout`, `api-error=<code>`, `api-parse-error`,
+  `log-mkdir-error`, `log-append-error`, `stdin-error`, `uncaught=<message>`.
+- Hook ensures `~/.claude/` exists before appending to `usage-log.txt` (was
+  silently swallowing the directory-missing error before).
+- `package.json` declares `repository` (HTTPS URL to the GitHub repo). This
+  enables relative image URLs in the README on the VS Code Marketplace and
+  removes the need for the `--allow-missing-repository` flag in `vsce
+  package`.
+- `.vscodeignore` now excludes `DEV-NOTES.md`, `CLAUDE.md`, README screenshot
+  PNGs, and any `*.zip` containers. The packaged `.vsix` shrunk from 92 KB
+  to 42 KB.
+
 ## [0.17.0] - 2026-05-02
 ### Added
 - "Focus on data" checkbox in the chart options. Clamps the X-window to

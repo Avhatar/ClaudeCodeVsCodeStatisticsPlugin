@@ -1,11 +1,11 @@
 # Claude Usage Monitor — Dev Notes
 
-> **Last updated:** 2026-05-02, against version **0.17.0**.
+> **Last updated:** 2026-05-02, against version **0.20.0**.
 > Bump this header when you revise the file so future-you knows whether it tracks the current code.
 
 VS Code extension that surfaces Claude Code subscription usage (5h / weekly windows) in a sidebar, status bar, and chart panel.
 
-Built iteratively in one working session (May 2026, started from empty `x:\Projects\VsCodePlugins`). Current shipped version: **0.17.0**.
+Built iteratively in one working session (May 2026, started from empty `x:\Projects\VsCodePlugins`). Current shipped version: **0.20.0**.
 
 ## Why this architecture (read first)
 
@@ -179,6 +179,22 @@ Behaviour:
 
 Why robust on failure: Claude Code's hooks have a short execution budget; a slow API call could lose the point entirely. Better to have a stale point than no point. The plugin parser already understands stale lines.
 
+### Invocation log (since v0.18.0)
+
+The hook also appends a single diagnostic line per run to `~/.claude/claude-usage-monitor-hook.invocations.log`. Format:
+
+```
+[2026-05-02T17:15:18.290Z] start | stdin=3b | token=present | mode=ok 5h=23.0% wk=28.0% | wrote=101b | dur=351ms
+```
+
+Possible parts: `start`, `stdin=Nb`, `creds-missing | creds-parse-error=<msg> | creds-no-token | token=present`, `api-http=<code> | api-timeout | api-error=<code> | api-parse-error=<msg>`, `mode=ok|stale-api-fail|stale-no-token|skip-…`, `wrote=Nb | log-mkdir-error=<msg> | log-append-error=<msg>`, `uncaught=<msg>`, `dur=Nms`.
+
+Self-rotates: when the file exceeds 100 KB the hook truncates it to the last 100 lines on its next run.
+
+The point: when a user reports "log not appearing", this file answers two questions immediately — *did Claude Code invoke our hook?* (file empty / file growing) and *what failed?* (which part shows up). The user-visible command `Claude Usage: Show hook invocation log` opens it.
+
+The hook deliberately has **no silent `try/catch`** anywhere as of v0.18.0 — every failure surfaces in the invocation log and/or `process.stderr`. If you find yourself adding a bare `catch {}`, you're undoing this. Add a labelled `invokeLog(...)` instead.
+
 ## Plugin install / setup flow
 
 `Claude Usage: Install Stop hook` calls [src/hookSetup.ts:installHook](src/hookSetup.ts):
@@ -259,6 +275,9 @@ For full per-version notes see [CHANGELOG.md](./CHANGELOG.md). A condensed view:
 - **0.15.0** — predicted reset markers from `↻Xh` countdown of the latest non-stale sample.
 - **0.16.0** — sidebar mini chart + chart-panel-to-extension settings sync via `postMessage` and `globalState`. New shared `chartLogic.ts`.
 - **0.17.0** — "Focus on data" zoom; mini chart moved to bottom of sidebar; adaptive `pickXTicks`.
+- **0.18.0** — invocation log for the hook; all silent `try/catch` replaced with labelled error logging; `Claude Usage: Show hook invocation log` command; README troubleshooting on full Claude Code restart; `repository` field in `package.json`; `.vscodeignore` excludes docs and screenshots from the packaged `.vsix`.
+- **0.19.0** — sidebar mini chart wrapped in `<a href="command:claudeUsage.showChart">` so a click opens the full chart panel. Works because the sidebar webview is created with `enableCommandUris: true` (and `enableScripts: false` — the link does not require any JS in the sidebar). Also clickable when the mini chart shows the empty/error placeholder.
+- **0.20.0** — chart visualization is locked to a dark palette regardless of VS Code theme. Chart panel `:root` no longer reads `--vscode-editor-background`/`--vscode-foreground`/etc. — uses fixed hex (`#1e1e1e`, `#2a2a2a`, `#3c3c3c`, `#ddd`, `#999`). Mini-chart island in `webview.ts` hardcodes the same dark backdrop on `.mini-svg` and `.mini-empty`. Reason: white/low-alpha-white SVG strokes (day-boundary dashes, grid) were tuned for a dark canvas and were invisible on light VS Code themes. Surrounding sidebar text/bars still follow the VS Code theme so the activity-bar surface integrates normally; only the chart "island" is locked.
 
 ## Gotcha: regex backslashes inside template literals
 
@@ -290,4 +309,4 @@ When changing parsing behaviour, update both. The inline JS copy uses `\\d` etc.
 
 ## Distribution
 
-Hand the user the `.vsix` from this directory (currently `claude-usage-monitor-0.17.0.vsix`, ~34 KB). Requirements: VS Code 1.85+, Claude Code installed and `/login`-ed, Node.js on PATH. After install + Reload Window the auto-prompt offers to install the Stop hook; one click and they're done.
+Hand the user the `.vsix` from this directory (currently `claude-usage-monitor-0.20.0.vsix`, ~42 KB). Requirements: VS Code 1.85+, Claude Code installed and `/login`-ed, Node.js on PATH. After install + Reload Window the auto-prompt offers to install the Stop hook; one click and they're done. If the log doesn't start populating, check `Claude Usage: Show hook invocation log` and the README Troubleshooting section.

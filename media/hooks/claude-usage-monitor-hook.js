@@ -5,6 +5,12 @@
 // extension. Fetches the OAuth usage endpoint and appends a parseable line to
 // ~/.claude/usage-log.txt. The extension reads that log to render the panel
 // and chart.
+//
+// Side-channel diagnostic file: ~/.claude/claude-usage-monitor-hook.invocations.log
+// One line per hook invocation with status + duration. Self-rotated when too
+// large. Lets you see whether Claude Code actually invokes the hook (the most
+// common "doesn't work" cause is a stale Claude Code session that never picked
+// up the new settings.json).
 
 const fs = require('fs');
 const path = require('path');
@@ -13,17 +19,70 @@ const https = require('https');
 
 const CREDS_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
 const LOG_FILE = path.join(os.homedir(), '.claude', 'usage-log.txt');
+const INVOCATION_LOG = path.join(os.homedir(), '.claude', 'claude-usage-monitor-hook.invocations.log');
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const FETCH_TIMEOUT_MS = 2000;
+const INVOCATION_LOG_MAX_BYTES = 100 * 1024; // 100 KB; keep last ~100 lines on rollover.
+
+const invocationStart = Date.now();
+const invocationParts = [];
+let invocationFlushed = false;
+
+function invokeLog(part) {
+    invocationParts.push(part);
+}
+
+function flushInvocationLog() {
+    if (invocationFlushed) return;
+    invocationFlushed = true;
+    const dur = Date.now() - invocationStart;
+    const line = `[${new Date().toISOString()}] ${invocationParts.join(' | ')} | dur=${dur}ms\n`;
+
+    try {
+        const dir = path.dirname(INVOCATION_LOG);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        if (fs.existsSync(INVOCATION_LOG)) {
+            const stat = fs.statSync(INVOCATION_LOG);
+            if (stat.size > INVOCATION_LOG_MAX_BYTES) {
+                const text = fs.readFileSync(INVOCATION_LOG, 'utf8');
+                const lines = text.split(/\r?\n/).filter(Boolean);
+                const kept = lines.slice(-100);
+                fs.writeFileSync(INVOCATION_LOG, kept.join('\n') + '\n', 'utf8');
+            }
+        }
+        fs.appendFileSync(INVOCATION_LOG, line);
+    } catch (err) {
+        process.stderr.write(`[claude-usage-monitor-hook] failed to write invocation log: ${err.message}\n`);
+    }
+}
+
+process.on('exit', flushInvocationLog);
+process.on('uncaughtException', (err) => {
+    invokeLog(`uncaught=${err && err.message ? err.message : err}`);
+    flushInvocationLog();
+    process.exit(0);
+});
+
+invokeLog('start');
 
 function readToken() {
-    try {
-        const creds = JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
-        const token = creds && creds.claudeAiOauth && creds.claudeAiOauth.accessToken;
-        return typeof token === 'string' && token.length > 0 ? token : null;
-    } catch {
+    if (!fs.existsSync(CREDS_FILE)) {
+        invokeLog('creds-missing');
         return null;
     }
+    let creds;
+    try {
+        creds = JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
+    } catch (err) {
+        invokeLog(`creds-parse-error=${err.message}`);
+        return null;
+    }
+    const token = creds && creds.claudeAiOauth && creds.claudeAiOauth.accessToken;
+    if (!token) {
+        invokeLog('creds-no-token');
+        return null;
+    }
+    return token;
 }
 
 function fetchUsage(token) {
@@ -44,12 +103,27 @@ function fetchUsage(token) {
             res.setEncoding('utf8');
             res.on('data', (c) => (body += c));
             res.on('end', () => {
-                if (res.statusCode !== 200) return finish(null);
-                try { finish(JSON.parse(body)); } catch { finish(null); }
+                if (res.statusCode !== 200) {
+                    invokeLog(`api-http=${res.statusCode}`);
+                    return finish(null);
+                }
+                try {
+                    finish(JSON.parse(body));
+                } catch (err) {
+                    invokeLog(`api-parse-error=${err.message}`);
+                    finish(null);
+                }
             });
         });
-        req.on('timeout', () => { req.destroy(); finish(null); });
-        req.on('error', () => finish(null));
+        req.on('timeout', () => {
+            req.destroy();
+            invokeLog('api-timeout');
+            finish(null);
+        });
+        req.on('error', (err) => {
+            invokeLog(`api-error=${err.code || err.message}`);
+            finish(null);
+        });
         req.end();
     });
 }
@@ -106,14 +180,17 @@ function fmtUntil(iso) {
 }
 
 function readStdin() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         let data = '';
         let resolved = false;
         const done = () => { if (!resolved) { resolved = true; resolve(data); } };
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', (c) => (data += c));
         process.stdin.on('end', done);
-        process.stdin.on('error', done);
+        process.stdin.on('error', (err) => {
+            invokeLog(`stdin-error=${err.message}`);
+            done();
+        });
         setTimeout(done, 800);
     });
 }
@@ -121,19 +198,21 @@ function readStdin() {
 const LAST_LINE_RE = /\[(?<ts>[^\]]+)\][\s\S]*?5h\s+(?<h5>[\d.]+)%(?:\s*↻(?<h5r>\S+))?[\s\S]*?week\s+(?<wk>[\d.]+)%(?:\s*↻(?<wkr>\S+))?/;
 
 function readLastValid() {
+    if (!fs.existsSync(LOG_FILE)) return null;
+    let raw;
     try {
-        const raw = fs.readFileSync(LOG_FILE, 'utf8');
-        const lines = raw.split(/\r?\n/);
-        for (let i = lines.length - 1; i >= 0; i--) {
-            const m = LAST_LINE_RE.exec(lines[i]);
-            if (m && m.groups) {
-                return {
-                    five: parseFloat(m.groups.h5),
-                    week: parseFloat(m.groups.wk),
-                };
-            }
+        raw = fs.readFileSync(LOG_FILE, 'utf8');
+    } catch (err) {
+        invokeLog(`log-read-error=${err.message}`);
+        return null;
+    }
+    const lines = raw.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const m = LAST_LINE_RE.exec(lines[i]);
+        if (m && m.groups) {
+            return { five: parseFloat(m.groups.h5), week: parseFloat(m.groups.wk) };
         }
-    } catch {}
+    }
     return null;
 }
 
@@ -147,26 +226,56 @@ function writeLine(ts, fivePct, weekPct, fiveResetsIn, weekResetsIn, tag) {
     }
     if (tag) segs.push(tag);
     const line = `[${ts}] | ${segs.join('  .  ')}\n`;
-    try { fs.appendFileSync(LOG_FILE, line); } catch {}
+
+    const dir = path.dirname(LOG_FILE);
+    if (!fs.existsSync(dir)) {
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+        } catch (err) {
+            invokeLog(`log-mkdir-error=${err.message}`);
+            process.stderr.write(`[claude-usage-monitor-hook] failed to create ${dir}: ${err.message}\n`);
+            return false;
+        }
+    }
+    try {
+        fs.appendFileSync(LOG_FILE, line);
+        invokeLog(`wrote=${line.length}b`);
+        return true;
+    } catch (err) {
+        invokeLog(`log-append-error=${err.message}`);
+        process.stderr.write(`[claude-usage-monitor-hook] failed to append ${LOG_FILE}: ${err.message}\n`);
+        return false;
+    }
 }
 
 (async () => {
-    // Drain stdin so Claude Code is happy even though we don't use it.
-    try { await readStdin(); } catch {}
+    try {
+        const stdinData = await readStdin();
+        invokeLog(`stdin=${stdinData.length}b`);
+    } catch (err) {
+        invokeLog(`stdin-thrown=${err.message}`);
+    }
 
     const ts = new Date().toISOString();
     const token = readToken();
 
     if (!token) {
         const last = readLastValid();
-        if (last) writeLine(ts, last.five, last.week, null, null, 'src=stale-no-token');
+        if (last) {
+            invokeLog('mode=stale-no-token');
+            writeLine(ts, last.five, last.week, null, null, 'src=stale-no-token');
+        } else {
+            invokeLog('mode=skip-no-token-no-history');
+        }
         return;
     }
+    invokeLog('token=present');
 
     const payload = await fetchUsage(token);
     const windows = pickWindows(payload);
 
     if (windows && (windows.five || windows.week)) {
+        invokeLog(`mode=ok 5h=${windows.five ? windows.five.pct.toFixed(1) + '%' : '-'} wk=${windows.week ? windows.week.pct.toFixed(1) + '%' : '-'}`);
         writeLine(
             ts,
             windows.five ? windows.five.pct : null,
@@ -176,11 +285,19 @@ function writeLine(ts, fivePct, weekPct, fiveResetsIn, weekResetsIn, tag) {
             null
         );
     } else {
-        // API failed (timeout, 429, network, shape) — write last known values
-        // so the timeline doesn't lose this turn.
         const last = readLastValid();
-        if (last) writeLine(ts, last.five, last.week, null, null, 'src=stale-api-fail');
+        if (last) {
+            invokeLog('mode=stale-api-fail');
+            writeLine(ts, last.five, last.week, null, null, 'src=stale-api-fail');
+        } else {
+            invokeLog('mode=skip-api-fail-no-history');
+        }
     }
-})().catch(() => {
-    process.exit(0);
-});
+})().then(
+    () => { flushInvocationLog(); process.exit(0); },
+    (err) => {
+        invokeLog(`main-rejected=${err && err.message ? err.message : err}`);
+        flushInvocationLog();
+        process.exit(0);
+    }
+);

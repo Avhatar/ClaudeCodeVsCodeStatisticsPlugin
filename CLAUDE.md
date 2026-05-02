@@ -23,7 +23,7 @@ Full architecture, history, and rationale live in [DEV-NOTES.md](./DEV-NOTES.md)
 
 - Bump `version` in `package.json` before every install. VS Code does not reliably re-load the same version, even after `Developer: Reload Window`.
 - After any `src/` change: `npm run compile` → `npx --yes @vscode/vsce package --skip-license --allow-missing-repository` → `code --install-extension claude-usage-monitor-<version>.vsix` → tell the user to run `Developer: Reload Window` (and reopen the chart panel if it was open — `retainContextWhenHidden: true` keeps webviews alive across reloads).
-- Update [CHANGELOG.md](./CHANGELOG.md) with a new section at the top using the Keep a Changelog format. Bump the "Last updated" header in [DEV-NOTES.md](./DEV-NOTES.md).
+- **As soon as you bump the version and run `vsce package`** — before moving on to anything else — update [CHANGELOG.md](./CHANGELOG.md) with a new section at the top (Keep a Changelog format) and bump the "Last updated" header in [DEV-NOTES.md](./DEV-NOTES.md) to match. Don't defer; deferred docs become wrong docs.
 
 ## Style
 

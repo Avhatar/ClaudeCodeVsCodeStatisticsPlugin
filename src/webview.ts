@@ -112,23 +112,40 @@ export function renderHtml(nonce: string, state: ViewState, samples: ParsedSampl
   .mini {
     margin-bottom: 18px;
   }
+  /* Mini-chart island uses a fixed dark palette regardless of VS Code theme.
+     The chart paths / day-boundary dashes / low-alpha grid were tuned for a
+     dark backdrop and become unreadable on a light theme. The rest of the
+     sidebar (text, progress bars) keeps inheriting --vscode-* tokens. */
+  .mini-link {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .mini-link:hover .mini-svg,
+  .mini-link:hover .mini-empty {
+    border-color: #4aa7f7;
+  }
   .mini-svg {
     width: 100%;
     height: 96px;
-    background: var(--bar-bg);
-    border: 1px solid var(--bar-border);
+    background: #2a2a2a;
+    border: 1px solid #3c3c3c;
     border-radius: 6px;
     display: block;
+    transition: border-color 0.15s ease;
   }
   .mini-empty {
-    background: var(--bar-bg);
-    border: 1px solid var(--bar-border);
+    background: #2a2a2a;
+    border: 1px solid #3c3c3c;
     border-radius: 6px;
     padding: 22px 8px;
     text-align: center;
-    color: var(--muted);
+    color: #999;
     font-size: 11px;
     font-style: italic;
+    cursor: pointer;
+    transition: border-color 0.15s ease;
   }
   .turn-card .label {
     font-size: 10px;
@@ -303,7 +320,7 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
 
   const range = parseRange(s.days);
   if ('error' in range) {
-    return `<div class="mini"><div class="mini-empty">Chart settings: ${escapeHtml(range.error)}</div></div>`;
+    return `<div class="mini"><a href="command:claudeUsage.showChart" class="mini-link" title="Open full chart"><div class="mini-empty">Chart settings: ${escapeHtml(range.error)}</div></a></div>`;
   }
   const nowMs = Date.now();
   const win = windowFromRange(range.startDay, range.endDay, nowMs);
@@ -315,7 +332,7 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
     .map(p => ({ ...p, tsMs: new Date(p.ts).getTime() }));
 
   if (visible.length === 0) {
-    return `<div class="mini"><div class="mini-empty">No data in window</div></div>`;
+    return `<div class="mini"><a href="command:claudeUsage.showChart" class="mini-link" title="Open full chart"><div class="mini-empty">No data in window</div></a></div>`;
   }
 
   const xOf = (ms: number) => PAD.left + ((ms - win.fromMs) / (win.toMs - win.fromMs)) * PW;
@@ -420,24 +437,26 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
   return `
     <div class="mini">
       <h2>Mini Chart</h2>
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="mini-svg">
-        <defs>
-          <linearGradient id="miniFive" gradientUnits="userSpaceOnUse" x1="0" y1="${PAD.top}" x2="0" y2="${PAD.top + PH}">
-            <stop offset="0%" stop-color="${s.fiveFade}"/>
-            <stop offset="100%" stop-color="${s.fiveSat}"/>
-          </linearGradient>
-          <linearGradient id="miniWeek" gradientUnits="userSpaceOnUse" x1="0" y1="${PAD.top}" x2="0" y2="${PAD.top + PH}">
-            <stop offset="0%" stop-color="${s.weekFade}"/>
-            <stop offset="100%" stop-color="${s.weekSat}"/>
-          </linearGradient>
-        </defs>
-        ${gridStops}
-        ${dayLines}
-        ${resetLines}
-        <path d="${pathFor(p => p.week)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="${pathFor(p => p.five)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-        ${forecastPath}
-      </svg>
+      <a href="command:claudeUsage.showChart" class="mini-link" title="Open full chart">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="mini-svg">
+          <defs>
+            <linearGradient id="miniFive" gradientUnits="userSpaceOnUse" x1="0" y1="${PAD.top}" x2="0" y2="${PAD.top + PH}">
+              <stop offset="0%" stop-color="${s.fiveFade}"/>
+              <stop offset="100%" stop-color="${s.fiveSat}"/>
+            </linearGradient>
+            <linearGradient id="miniWeek" gradientUnits="userSpaceOnUse" x1="0" y1="${PAD.top}" x2="0" y2="${PAD.top + PH}">
+              <stop offset="0%" stop-color="${s.weekFade}"/>
+              <stop offset="100%" stop-color="${s.weekSat}"/>
+            </linearGradient>
+          </defs>
+          ${gridStops}
+          ${dayLines}
+          ${resetLines}
+          <path d="${pathFor(p => p.week)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="${pathFor(p => p.five)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          ${forecastPath}
+        </svg>
+      </a>
     </div>
   `;
 }

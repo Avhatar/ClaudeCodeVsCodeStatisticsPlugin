@@ -2,8 +2,18 @@
 .vscode-test/**
 src/**
 .gitignore
+.gitattributes
 .yarnrc
 tsconfig.json
 **/*.map
 **/*.ts
 node_modules/**
+
+# Repo docs that aren't needed in the packaged extension:
+DEV-NOTES.md
+CLAUDE.md
+patch.js
+*.zip
+
+# Screenshots are for the GitHub README only:
+media/Screenshot*.png

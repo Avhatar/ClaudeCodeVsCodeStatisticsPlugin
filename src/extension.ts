@@ -63,6 +63,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('claudeUsage.setupHook', () => doSetupHook(context)),
     vscode.commands.registerCommand('claudeUsage.removeHook', () => doRemoveHook()),
     vscode.commands.registerCommand('claudeUsage.showHookStatus', () => showHookStatus()),
+    vscode.commands.registerCommand('claudeUsage.showHookInvocationLog', () => showHookInvocationLog()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('claudeUsage.logPath')) {
         startWatcher();
@@ -153,6 +154,18 @@ async function doRemoveHook() {
     const msg = err instanceof Error ? err.message : String(err);
     vscode.window.showErrorMessage(`Claude Usage: ${msg}`);
   }
+}
+
+async function showHookInvocationLog() {
+  const logPath = path.join(require('os').homedir(), '.claude', 'claude-usage-monitor-hook.invocations.log');
+  if (!fs.existsSync(logPath)) {
+    vscode.window.showInformationMessage(
+      `Claude Usage: invocation log not found at ${logPath}. The hook has never run yet — make a turn in Claude Code and try again.`
+    );
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(logPath);
+  await vscode.window.showTextDocument(doc, { preview: true });
 }
 
 async function showHookStatus() {

@@ -10,12 +10,16 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
+  /* Locked dark palette — chart visuals (white day-boundary dashes, low-alpha
+     white grid, gradient strokes) were tuned for a dark backdrop and become
+     unreadable on a light VS Code theme. We deliberately do NOT inherit
+     --vscode-* color tokens here; only fonts follow the user's settings. */
   :root {
-    --bg: var(--vscode-editor-background, #1e1e1e);
-    --panel: var(--vscode-editorWidget-background, #2a2a2a);
-    --border: var(--vscode-widget-border, #3c3c3c);
-    --text: var(--vscode-foreground, #ddd);
-    --muted: var(--vscode-descriptionForeground, #999);
+    --bg: #1e1e1e;
+    --panel: #2a2a2a;
+    --border: #3c3c3c;
+    --text: #ddd;
+    --muted: #999;
     --grid: rgba(255,255,255,0.06);
     --five: #f87171;
     --week: #4aa7f7;

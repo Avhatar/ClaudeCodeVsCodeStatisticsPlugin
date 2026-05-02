@@ -121,6 +121,11 @@ VS Code does not reload installed extensions automatically when you run `code --
 **Chart says "Invalid range" for an obvious input like `1`.**
 Open and re-open the chart panel after a reload. If the issue persists, the persisted webview state may be corrupted; uninstall and reinstall the extension to reset it.
 
+**Hook installed but the log file is never created.**
+The most common cause is a stale Claude Code session that was already running before the hook was registered. `Developer: Reload Window` reloads VS Code extensions but does not always restart the Claude Code process underneath. Fully close Claude Code (or the IDE) and reopen, then make any turn.
+
+If the file still isn't appearing, check the **invocation log**: run `Claude Usage: Show hook invocation log`. Each Stop event appends one line there with the hook's status (`token=present`, `api-http=429`, `wrote=101b`, etc.). If the log doesn't exist or hasn't grown after a turn, Claude Code isn't calling our hook — verify with `Claude Usage: Show hook status`. If the log grows but with `mode=skip-…` lines, see what the reason is (no token, no history, API down) and fix accordingly.
+
 **The Stop hook doesn't seem to fire on every turn.**
 Some turn types (interruptions, certain agent loops) may not trigger a `Stop` event. The extension's parser is resilient to gaps and rate-limit failures, so missing the occasional turn is fine.
 

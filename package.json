@@ -2,7 +2,7 @@
   "name": "claude-usage-monitor",
   "displayName": "Claude Usage Monitor",
   "description": "Show Claude Code subscription limits (5h / weekly) and last-turn delta from the usage hook log.",
-  "version": "0.17.0",
+  "version": "0.20.0",
   "publisher": "owlcat-local",
   "engines": {
     "vscode": "^1.85.0"
@@ -68,6 +68,10 @@
       {
         "command": "claudeUsage.showHookStatus",
         "title": "Claude Usage: Show hook status"
+      },
+      {
+        "command": "claudeUsage.showHookInvocationLog",
+        "title": "Claude Usage: Show hook invocation log"
       }
     ],
     "menus": {
