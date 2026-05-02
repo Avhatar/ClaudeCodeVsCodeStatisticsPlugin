@@ -1,0 +1,99 @@
+{
+  "name": "claude-usage-monitor",
+  "displayName": "Claude Usage Monitor",
+  "description": "Show Claude Code subscription limits (5h / weekly) and last-turn delta from the usage hook log.",
+  "version": "0.17.0",
+  "publisher": "owlcat-local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeUsage",
+          "title": "Claude Usage",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeUsage": [
+        {
+          "type": "webview",
+          "id": "claudeUsage.panel",
+          "name": "Limits"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeUsage.refresh",
+        "title": "Claude Usage: Refresh now"
+      },
+      {
+        "command": "claudeUsage.showDailySummary",
+        "title": "Claude Usage: Show daily summary"
+      },
+      {
+        "command": "claudeUsage.showChart",
+        "title": "Claude Usage: Show chart",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "claudeUsage.openLogFile",
+        "title": "Claude Usage: Open usage-log.txt"
+      },
+      {
+        "command": "claudeUsage.showLog",
+        "title": "Claude Usage: Show plugin log"
+      },
+      {
+        "command": "claudeUsage.setupHook",
+        "title": "Claude Usage: Install Stop hook"
+      },
+      {
+        "command": "claudeUsage.removeHook",
+        "title": "Claude Usage: Remove Stop hook"
+      },
+      {
+        "command": "claudeUsage.showHookStatus",
+        "title": "Claude Usage: Show hook status"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeUsage.showChart",
+          "when": "view == claudeUsage.panel",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Usage Monitor",
+      "properties": {
+        "claudeUsage.logPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to Claude Code usage-log.txt (default: ~/.claude/usage-log.txt)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
