@@ -22,6 +22,20 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   weekFade: '#a8cfff',
 };
 
+export interface TokensChartSettings {
+  days: string;
+  gap: number;
+  yMode: 'tokens' | 'logTokens' | 'usd';
+  focus: boolean;
+}
+
+export const DEFAULT_TOKENS_CHART_SETTINGS: TokensChartSettings = {
+  days: '1',
+  gap: 8,
+  yMode: 'usd',
+  focus: true,
+};
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type RangeResult =

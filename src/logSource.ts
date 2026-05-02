@@ -26,10 +26,38 @@ export interface ParsedSample {
   fiveResetsIn: string | null;
   weekResetsIn: string | null;
   stale: boolean;
+  tokIn: number | null;
+  tokOut: number | null;
+  tokCacheCreate: number | null;
+  tokCacheRead: number | null;
+  model: string | null;
 }
 
 const FULL_LINE_RE = /\[(?<ts>[^\]]+)\][\s\S]*?5h\s+(?<h5>[\d.]+)%(?:\s*\((?<h5d>[+-][\d.]+)%\))?(?:\s*↻(?<h5r>\S+))?[\s\S]*?week\s+(?<wk>[\d.]+)%(?:\s*\((?<wkd>[+-][\d.]+)%\))?(?:\s*↻(?<wkr>\S+))?/;
 const TS_ONLY_RE = /^\s*\[(?<ts>[^\]]+)\]/;
+const TOKENS_RE = /turn\s+in:(\d+(?:\.\d+)?[KM]?)\s+out:(\d+(?:\.\d+)?[KM]?)\s+c\+(\d+(?:\.\d+)?[KM]?)\s+c-(\d+(?:\.\d+)?[KM]?)/;
+const MODEL_RE = /\bmodel=([\w.\-]+)/;
+
+function parseShort(s: string): number {
+  const last = s.charAt(s.length - 1);
+  if (last === 'K') return parseFloat(s) * 1000;
+  if (last === 'M') return parseFloat(s) * 1_000_000;
+  return parseFloat(s);
+}
+
+function extractTokens(line: string) {
+  const m = TOKENS_RE.exec(line);
+  const mm = MODEL_RE.exec(line);
+  const model = mm ? mm[1] : null;
+  if (!m) return { tokIn: null, tokOut: null, tokCacheCreate: null, tokCacheRead: null, model };
+  return {
+    tokIn: parseShort(m[1]),
+    tokOut: parseShort(m[2]),
+    tokCacheCreate: parseShort(m[3]),
+    tokCacheRead: parseShort(m[4]),
+    model,
+  };
+}
 
 interface RawSample extends ParsedSample {}
 
@@ -48,6 +76,7 @@ export function parseLine(line: string): RawSample | null {
       fiveResetsIn: g.h5r ?? null,
       weekResetsIn: g.wkr ?? null,
       stale: false,
+      ...extractTokens(line),
     };
   }
   // Fallback: line has a timestamp but no parseable %. We still register it
@@ -65,6 +94,7 @@ export function parseLine(line: string): RawSample | null {
       fiveResetsIn: null,
       weekResetsIn: null,
       stale: true,
+      ...extractTokens(line),
     };
   }
   return null;

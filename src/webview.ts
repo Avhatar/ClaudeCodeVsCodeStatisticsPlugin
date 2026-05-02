@@ -1,23 +1,35 @@
 import { UsageStats, ParsedSample } from './logSource';
-import { ChartSettings, parseRange, windowFromRange, parseDur, midColor } from './chartLogic';
+import { ChartSettings, TokensChartSettings, parseRange, windowFromRange, parseDur, midColor } from './chartLogic';
+import { PricingTable } from './pricing';
 
 export interface ViewState {
   stats: UsageStats | null;
   error: { code: string; detail?: string } | null;
   lastFetchAt: string | null;
+  hookOutdated: { installed: string | null; bundled: string } | null;
 }
 
-export function renderHtml(nonce: string, state: ViewState, samples: ParsedSample[], settings: ChartSettings): string {
+export function renderHtml(
+  nonce: string,
+  state: ViewState,
+  samples: ParsedSample[],
+  settings: ChartSettings,
+  tokensSettings: TokensChartSettings,
+  pricing: PricingTable | null,
+): string {
   const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
 
   let body: string;
   if (state.stats) {
-    body = renderStats(state.stats) + renderMiniChart(samples, settings);
+    body = renderStats(state.stats)
+      + renderMiniChart(samples, settings)
+      + renderTokensMiniChart(samples, tokensSettings, pricing);
   } else if (state.error) {
     body = renderError(state.error);
   } else {
     body = renderLoading();
   }
+  if (state.hookOutdated) body = renderUpdateBanner(state.hookOutdated) + body;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -192,6 +204,29 @@ export function renderHtml(nonce: string, state: ViewState, samples: ParsedSampl
     margin-top: 6px;
   }
   .err a.btn:hover { opacity: 0.9; }
+  .update-banner {
+    background: #2a2a2a;
+    border: 1px solid #facc15;
+    border-radius: 5px;
+    padding: 8px 10px;
+    margin-bottom: 14px;
+    font-size: 11px;
+    color: #ddd;
+    line-height: 1.5;
+  }
+  .update-banner .ttl { color: #facc15; font-weight: 600; }
+  .update-banner a {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 3px 10px;
+    background: #facc15;
+    color: #1e1e1e;
+    border-radius: 3px;
+    text-decoration: none;
+    font-weight: 500;
+  }
+  .update-banner a:hover { opacity: 0.9; }
+  .update-banner .ver { color: #999; font-family: var(--vscode-editor-font-family, monospace); }
 </style>
 </head>
 <body>
@@ -202,6 +237,15 @@ ${body}
 
 function renderLoading(): string {
   return `<div class="empty">Fetching usage…</div>`;
+}
+
+function renderUpdateBanner(info: { installed: string | null; bundled: string }): string {
+  const from = info.installed ?? 'unknown';
+  return `<div class="update-banner">
+    <div class="ttl">Hook update available</div>
+    <div>Installed <span class="ver">${escapeHtml(from)}</span> → bundled <span class="ver">${escapeHtml(info.bundled)}</span></div>
+    <a href="command:claudeUsage.updateHook">Update hook</a>
+  </div>`;
 }
 
 function renderError(err: { code: string; detail?: string }): string {
@@ -455,6 +499,197 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
           <path d="${pathFor(p => p.week)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="${pathFor(p => p.five)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
           ${forecastPath}
+        </svg>
+      </a>
+    </div>
+  `;
+}
+
+const TOKENS_COLORS = { out: '#ff5252', in: '#ff9c3c', cc: '#ffd23f', cr: '#3ddc97' };
+
+function lookupModelPrice(pricing: PricingTable | null, model: string | null) {
+  if (!pricing || !pricing.models) return null;
+  if (model && pricing.models[model]) return pricing.models[model];
+  if (model) {
+    let m = model;
+    while (m.lastIndexOf('-') > 0) {
+      m = m.slice(0, m.lastIndexOf('-'));
+      if (pricing.models[m]) return pricing.models[m];
+    }
+  }
+  return pricing.fallback ? (pricing.models[pricing.fallback] || null) : null;
+}
+
+function fmtUsdShort(n: number): string {
+  if (!isFinite(n) || n === 0) return '$0';
+  if (n < 0.005) return '<$0.01';
+  if (n < 1) return '$' + n.toFixed(2);
+  if (n < 100) return '$' + n.toFixed(1);
+  return '$' + Math.round(n);
+}
+
+function fmtTokShort(n: number): string {
+  if (!isFinite(n) || n === 0) return '0';
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return (n / 1000).toFixed(0) + 'K';
+  return (n / 1_000_000).toFixed(1) + 'M';
+}
+
+function renderTokensMiniChart(samples: ParsedSample[], s: TokensChartSettings, pricing: PricingTable | null): string {
+  const W = 240, H = 96;
+  const PAD = { top: 4, right: 4, bottom: 4, left: 4 };
+  const PW = W - PAD.left - PAD.right;
+  const PH = H - PAD.top - PAD.bottom;
+
+  const range = parseRange(s.days);
+  if ('error' in range) {
+    return `<div class="mini"><a href="command:claudeUsage.showTokens" class="mini-link" title="Open full tokens chart"><div class="mini-empty">Tokens chart settings: ${escapeHtml(range.error)}</div></a></div>`;
+  }
+  const nowMs = Date.now();
+  let win = windowFromRange(range.startDay, range.endDay, nowMs);
+  let fromMs = win.fromMs, toMs = win.toMs;
+
+  // Only count turns that have token data; old log lines without tokens aren't useful here.
+  const visible = samples
+    .filter(p => {
+      const t = new Date(p.ts).getTime();
+      return t >= fromMs && t <= toMs && p.tokIn != null && p.tokOut != null && p.tokCacheCreate != null && p.tokCacheRead != null;
+    })
+    .map(p => ({ ...p, tsMs: new Date(p.ts).getTime() }));
+
+  if (visible.length === 0) {
+    return `<div class="mini"><a href="command:claudeUsage.showTokens" class="mini-link" title="Open full tokens chart"><div class="mini-empty">No token data in window</div></a></div>`;
+  }
+
+  // Apply Focus on data — same logic as the main tokens chart.
+  if (s.focus && visible.length > 0) {
+    const HOUR = 3600000;
+    const minTs = visible[0].tsMs;
+    const maxTs = visible[visible.length - 1].tsMs;
+    fromMs = Math.max(fromMs, minTs - HOUR);
+    toMs   = Math.min(toMs,   maxTs + HOUR);
+  }
+
+  const isUsd = s.yMode === 'usd' && pricing != null;
+  const isLog = s.yMode === 'logTokens';
+
+  // Per-turn 4-segment values in the active mode
+  type Seg = { out: number; in_: number; cc: number; cr: number };
+  const segVals: Seg[] = visible.map(p => {
+    if (isUsd) {
+      const price = lookupModelPrice(pricing, p.model);
+      if (!price) return { out: 0, in_: 0, cc: 0, cr: 0 };
+      return {
+        out: (p.tokOut || 0) * price.output / 1_000_000,
+        in_: (p.tokIn  || 0) * price.input  / 1_000_000,
+        cc:  (p.tokCacheCreate || 0) * price.cache_write_5m / 1_000_000,
+        cr:  (p.tokCacheRead   || 0) * price.cache_read     / 1_000_000,
+      };
+    }
+    return {
+      out: p.tokOut || 0,
+      in_: p.tokIn  || 0,
+      cc:  p.tokCacheCreate || 0,
+      cr:  p.tokCacheRead   || 0,
+    };
+  });
+
+  let totalSum = 0, maxStack = 0;
+  for (const sv of segVals) {
+    const stack = sv.out + sv.in_ + sv.cc + sv.cr;
+    if (stack > maxStack) maxStack = stack;
+    totalSum += stack;
+  }
+
+  const xOf = (ms: number) => PAD.left + ((ms - fromMs) / (toMs - fromMs)) * PW;
+  let yScale: (v: number) => number;
+  if (isLog) {
+    const hiVal = Math.max(maxStack, 10);
+    const hi = Math.log10(hiVal) + 0.05;
+    yScale = (v) => {
+      const y = v <= 0 ? 0 : Math.log10(v);
+      const t = y / hi;
+      return PAD.top + PH - Math.max(0, Math.min(1, t)) * PH;
+    };
+  } else {
+    const top = Math.max(maxStack, 1);
+    yScale = (v) => PAD.top + PH - (Math.max(0, Math.min(top, v)) / top) * PH;
+  }
+
+  // Bar width: clamp to min inter-sample gap so clusters never overlap.
+  let barW = 4;
+  if (visible.length >= 2) {
+    let minGapMs = Infinity;
+    for (let i = 1; i < visible.length; i++) {
+      const dt = visible[i].tsMs - visible[i - 1].tsMs;
+      if (dt > 0 && dt < minGapMs) minGapMs = dt;
+    }
+    const winMs = toMs - fromMs;
+    const minGapPx = minGapMs === Infinity ? PW : (minGapMs / winMs) * PW;
+    barW = Math.max(0.6, Math.min(4, minGapPx * 0.85));
+  }
+
+  // Day-boundary verticals (only if more than one day shown)
+  const DAY_MS = 86400000;
+  let dayLines = '';
+  if (toMs - fromMs > DAY_MS * 1.05) {
+    const sod = new Date(fromMs);
+    sod.setHours(0, 0, 0, 0);
+    let bMs = sod.getTime() + DAY_MS;
+    while (bMs < toMs) {
+      const x = xOf(bMs).toFixed(1);
+      dayLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="#ffffff" stroke-width="0.5" stroke-dasharray="1 3" stroke-opacity="0.25"/>`;
+      bMs += DAY_MS;
+    }
+  }
+
+  const yBase = PAD.top + PH;
+  const bars: string[] = [];
+  for (let i = 0; i < visible.length; i++) {
+    const p = visible[i];
+    const sv = segVals[i];
+    const cx = xOf(p.tsMs);
+    if (isLog) {
+      const drawLogBar = (v: number, color: string, slot: number) => {
+        if (!v || v <= 0) return;
+        const y = yScale(v);
+        const w = Math.max(0.4, barW / 4);
+        bars.push(`<rect x="${(cx - barW / 2 + slot * w).toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${(yBase - y).toFixed(2)}" fill="${color}" stroke="#1e1e1e" stroke-width="0.3"/>`);
+      };
+      drawLogBar(sv.out, TOKENS_COLORS.out, 0);
+      drawLogBar(sv.in_, TOKENS_COLORS.in,  1);
+      drawLogBar(sv.cc,  TOKENS_COLORS.cc,  2);
+      drawLogBar(sv.cr,  TOKENS_COLORS.cr,  3);
+    } else {
+      let cum = 0;
+      const segs: Array<[number, string]> = [
+        [sv.out, TOKENS_COLORS.out],
+        [sv.in_, TOKENS_COLORS.in],
+        [sv.cc,  TOKENS_COLORS.cc],
+        [sv.cr,  TOKENS_COLORS.cr],
+      ];
+      for (const [v, color] of segs) {
+        if (v <= 0) continue;
+        const y0 = yScale(cum);
+        const y1 = yScale(cum + v);
+        bars.push(`<rect x="${(cx - barW / 2).toFixed(2)}" y="${y1.toFixed(2)}" width="${barW.toFixed(2)}" height="${(y0 - y1).toFixed(2)}" fill="${color}" stroke="#1e1e1e" stroke-width="0.3"/>`);
+        cum += v;
+      }
+    }
+  }
+
+  const labelText = isUsd ? fmtUsdShort(totalSum) : fmtTokShort(totalSum);
+  const modeLabel = isUsd ? 'USD' : (s.yMode === 'logTokens' ? 'tokens (log)' : 'tokens');
+
+  return `
+    <div class="mini">
+      <h2>Mini Tokens</h2>
+      <a href="command:claudeUsage.showTokens" class="mini-link" title="Open full tokens chart">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="mini-svg">
+          ${dayLines}
+          ${bars.join('')}
+          <text x="${W - 6}" y="14" text-anchor="end" font-size="10" font-family="var(--vscode-editor-font-family, monospace)" fill="#ddd">${escapeHtml(labelText)}</text>
+          <text x="${W - 6}" y="26" text-anchor="end" font-size="9" font-family="var(--vscode-editor-font-family, monospace)" fill="#999">${escapeHtml(modeLabel)}</text>
         </svg>
       </a>
     </div>

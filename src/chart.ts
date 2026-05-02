@@ -1,4 +1,5 @@
 import { ParsedSample } from './logSource';
+import { PricingTable } from './pricing';
 
 export interface ChartTimePoint {
   ts: string;
@@ -10,15 +11,21 @@ export interface ChartTimePoint {
   fiveResetsIn: string | null;
   weekResetsIn: string | null;
   stale: boolean;
+  tokIn: number | null;
+  tokOut: number | null;
+  tokCacheCreate: number | null;
+  tokCacheRead: number | null;
+  model: string | null;
 }
 
 export interface ChartData {
   samples: ChartTimePoint[];
   generatedAt: string;
   generatedAtMs: number;
+  pricing: PricingTable | null;
 }
 
-export function prepareChartData(entries: ParsedSample[]): ChartData {
+export function prepareChartData(entries: ParsedSample[], pricing: PricingTable | null = null): ChartData {
   const samples: ChartTimePoint[] = [];
   for (const e of entries) {
     const t = new Date(e.ts).getTime();
@@ -33,6 +40,11 @@ export function prepareChartData(entries: ParsedSample[]): ChartData {
       fiveResetsIn: e.fiveResetsIn,
       weekResetsIn: e.weekResetsIn,
       stale: e.stale,
+      tokIn: e.tokIn,
+      tokOut: e.tokOut,
+      tokCacheCreate: e.tokCacheCreate,
+      tokCacheRead: e.tokCacheRead,
+      model: e.model,
     });
   }
   samples.sort((a, b) => a.tsMs - b.tsMs);
@@ -41,5 +53,6 @@ export function prepareChartData(entries: ParsedSample[]): ChartData {
     samples,
     generatedAt: new Date(now).toISOString(),
     generatedAtMs: now,
+    pricing,
   };
 }

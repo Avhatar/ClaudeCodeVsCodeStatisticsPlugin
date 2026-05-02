@@ -11,6 +11,20 @@ export interface HookStatus {
   registered: boolean;
   settingsPath: string;
   externalStopHookCount: number;
+  installedVersion: string | null;
+}
+
+const VERSION_RE = /claude-usage-monitor-hook v=([\d.]+)/;
+
+export function readHookVersion(scriptPath: string): string | null {
+  if (!fs.existsSync(scriptPath)) return null;
+  try {
+    const head = fs.readFileSync(scriptPath, 'utf8').slice(0, 800);
+    const m = VERSION_RE.exec(head);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 interface SettingsHookEntry {
@@ -61,6 +75,7 @@ export function getHookStatus(): HookStatus {
     registered,
     settingsPath: settingsPath(),
     externalStopHookCount,
+    installedVersion: scriptInstalled ? readHookVersion(scriptPath) : null,
   };
 }
 

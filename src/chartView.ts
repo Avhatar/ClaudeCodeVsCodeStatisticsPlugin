@@ -182,7 +182,7 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
 
 <script nonce="${nonce}">
 (function() {
-  const data = ${dataJson};
+  let data = ${dataJson};
   const svg = document.getElementById('chart');
   const meta = document.getElementById('meta');
   const tooltip = document.getElementById('tooltip');
@@ -632,7 +632,26 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     }
   });
 
+  // Live data updates from the extension (sent on every log change).
+  // The webview keeps its DOM/JS context alive while hidden thanks to
+  // retainContextWhenHidden, so DOM mutations here are visible the
+  // moment the user switches back to this tab — no html reassignment
+  // and no re-mount delay.
+  window.addEventListener('message', (e) => {
+    const msg = e && e.data;
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'data' && msg.data && Array.isArray(msg.data.samples)) {
+      data = msg.data;
+      render();
+    }
+  });
+
   render();
+
+  // Ask the extension for fresh data once we're ready to receive it.
+  // (Initial render uses the data baked into the html so the first
+  // paint is never blank.)
+  if (vsApi) vsApi.postMessage({ type: 'ready' });
 })();
 </script>
 </body>

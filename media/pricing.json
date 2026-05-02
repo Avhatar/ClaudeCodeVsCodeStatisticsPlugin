@@ -1,0 +1,30 @@
+{
+  "_source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "_updated": "2026-05-02",
+  "_unit": "USD per 1,000,000 tokens",
+  "_note": "Update by asking Claude in this workspace: 'refresh media/pricing.json from https://platform.claude.com/docs/en/about-claude/pricing'. Keys are the model id with the trailing -YYYYMMDD release date stripped (e.g. claude-sonnet-4-5-20250929 -> claude-sonnet-4-5). Lookup uses longest-prefix match against this table. cache_write_5m and cache_write_1h are the 5-minute and 1-hour ephemeral cache write rates respectively; pick whichever the model used per turn. cache_read is the cache-hit rate.",
+  "_caveats": [
+    "Opus 4.5+ dropped Opus pricing from $15/$75 to $5/$25 (per-MTok input/output). Opus 4.1 and earlier kept the old $15/$75.",
+    "Opus 4.7 uses a new tokenizer that may consume up to 35% more tokens for the same text — this is a tokenization change, not a price change, but it makes Opus 4.7 effectively more expensive than the rate alone suggests.",
+    "Sonnet 3.7 and Opus 3 are deprecated but still listed for older log entries.",
+    "Sonnet 3 has no pricing row on the page (only appears in tool-use table); not included here."
+  ],
+  "models": {
+    "claude-opus-4-7":   { "input": 5.0,  "output": 25.0, "cache_write_5m": 6.25,  "cache_write_1h": 10.0, "cache_read": 0.50 },
+    "claude-opus-4-6":   { "input": 5.0,  "output": 25.0, "cache_write_5m": 6.25,  "cache_write_1h": 10.0, "cache_read": 0.50 },
+    "claude-opus-4-5":   { "input": 5.0,  "output": 25.0, "cache_write_5m": 6.25,  "cache_write_1h": 10.0, "cache_read": 0.50 },
+    "claude-opus-4-1":   { "input": 15.0, "output": 75.0, "cache_write_5m": 18.75, "cache_write_1h": 30.0, "cache_read": 1.50 },
+    "claude-opus-4":     { "input": 15.0, "output": 75.0, "cache_write_5m": 18.75, "cache_write_1h": 30.0, "cache_read": 1.50 },
+    "claude-opus-3":     { "input": 15.0, "output": 75.0, "cache_write_5m": 18.75, "cache_write_1h": 30.0, "cache_read": 1.50 },
+
+    "claude-sonnet-4-6": { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
+    "claude-sonnet-4-5": { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
+    "claude-sonnet-4":   { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
+    "claude-sonnet-3-7": { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
+
+    "claude-haiku-4-5":  { "input": 1.0,  "output": 5.0,  "cache_write_5m": 1.25,  "cache_write_1h": 2.0,  "cache_read": 0.10 },
+    "claude-haiku-3-5":  { "input": 0.80, "output": 4.0,  "cache_write_5m": 1.00,  "cache_write_1h": 1.60, "cache_read": 0.08 },
+    "claude-haiku-3":    { "input": 0.25, "output": 1.25, "cache_write_5m": 0.30,  "cache_write_1h": 0.50, "cache_read": 0.03 }
+  },
+  "fallback": "claude-sonnet-4-6"
+}

@@ -6,17 +6,27 @@ import { renderHtml, ViewState } from './webview';
 import { renderDailySummaryMarkdownFromEntries } from './history';
 import { prepareChartData } from './chart';
 import { renderChartHtml } from './chartView';
-import { getHookStatus, installHook, uninstallHook, HOOK_FILENAME } from './hookSetup';
-import { ChartSettings, DEFAULT_CHART_SETTINGS } from './chartLogic';
+import { renderTokensHtml } from './tokensView';
+import { getHookStatus, installHook, uninstallHook, readHookVersion, HOOK_FILENAME } from './hookSetup';
+import { ChartSettings, DEFAULT_CHART_SETTINGS, TokensChartSettings, DEFAULT_TOKENS_CHART_SETTINGS } from './chartLogic';
+import { loadPricing, PricingTable } from './pricing';
 
 const SETUP_PROMPT_DECLINED_KEY = 'claudeUsage.setupPromptDeclined';
 const CHART_SETTINGS_KEY = 'claudeUsage.chartSettings';
+const TOKENS_SETTINGS_KEY = 'claudeUsage.tokensChartSettings';
 
 let extensionContext: vscode.ExtensionContext;
 let currentSamples: ParsedSample[] = [];
+let hookOutdatedInfo: { installed: string | null; bundled: string } | null = null;
+let updatePromptShownThisSession = false;
+let pricingTable: PricingTable | null = null;
 function getSettings(): ChartSettings {
   const saved = extensionContext?.globalState.get<ChartSettings>(CHART_SETTINGS_KEY);
   return saved ? { ...DEFAULT_CHART_SETTINGS, ...saved } : DEFAULT_CHART_SETTINGS;
+}
+function getTokensSettings(): TokensChartSettings {
+  const saved = extensionContext?.globalState.get<TokensChartSettings>(TOKENS_SETTINGS_KEY);
+  return saved ? { ...DEFAULT_TOKENS_CHART_SETTINGS, ...saved } : DEFAULT_TOKENS_CHART_SETTINGS;
 }
 
 let statusItem: vscode.StatusBarItem;
@@ -25,7 +35,7 @@ let logChannel: vscode.OutputChannel;
 let watcher: fs.FSWatcher | undefined;
 let debounce: NodeJS.Timeout | undefined;
 
-let currentState: ViewState = { stats: null, error: null, lastFetchAt: null };
+let currentState: ViewState = { stats: null, error: null, lastFetchAt: null, hookOutdated: null };
 
 function log(msg: string) {
   if (!logChannel) return;
@@ -58,9 +68,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('claudeUsage.refresh', () => refresh()),
     vscode.commands.registerCommand('claudeUsage.showDailySummary', () => showDailySummary()),
     vscode.commands.registerCommand('claudeUsage.showChart', () => showChart()),
+    vscode.commands.registerCommand('claudeUsage.showTokens', () => showTokens()),
     vscode.commands.registerCommand('claudeUsage.openLogFile', () => openLogFile()),
+    vscode.commands.registerCommand('claudeUsage.openPricingFile', () => openPricingFile()),
     vscode.commands.registerCommand('claudeUsage.showLog', () => logChannel.show(true)),
     vscode.commands.registerCommand('claudeUsage.setupHook', () => doSetupHook(context)),
+    vscode.commands.registerCommand('claudeUsage.updateHook', () => doUpdateHook()),
     vscode.commands.registerCommand('claudeUsage.removeHook', () => doRemoveHook()),
     vscode.commands.registerCommand('claudeUsage.showHookStatus', () => showHookStatus()),
     vscode.commands.registerCommand('claudeUsage.showHookInvocationLog', () => showHookInvocationLog()),
@@ -72,9 +85,69 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  pricingTable = loadPricing(context.extensionPath);
+  log(`pricing: ${pricingTable
+    ? Object.keys(pricingTable.models).length + ' models, updated=' + (pricingTable._updated ?? 'unknown')
+    : 'NOT LOADED (cost calc will be unavailable)'}`);
+
   startWatcher();
   refresh();
+  computeHookOutdated(context);
   maybePromptSetup(context);
+  maybePromptUpdate();
+}
+
+function bundledHookPath(): string {
+  return path.join(extensionContext.extensionPath, 'media', 'hooks', HOOK_FILENAME);
+}
+
+function computeHookOutdated(_context: vscode.ExtensionContext) {
+  const status = getHookStatus();
+  const bundled = readHookVersion(bundledHookPath());
+  if (!bundled) { hookOutdatedInfo = null; return; }
+  if (status.scriptInstalled && status.installedVersion !== bundled) {
+    hookOutdatedInfo = { installed: status.installedVersion, bundled };
+    log(`hook outdated: installed=${status.installedVersion ?? 'unknown'} bundled=${bundled}`);
+  } else {
+    hookOutdatedInfo = null;
+  }
+}
+
+async function maybePromptUpdate() {
+  if (!hookOutdatedInfo) return;
+  if (updatePromptShownThisSession) return;
+  updatePromptShownThisSession = true;
+  const { installed, bundled } = hookOutdatedInfo;
+  const choice = await vscode.window.showInformationMessage(
+    `Claude Usage Monitor: hook update available (${installed ?? 'unknown'} → ${bundled}).`,
+    'Update hook',
+    'Later'
+  );
+  if (choice === 'Update hook') {
+    await doUpdateHook();
+  }
+}
+
+async function doUpdateHook() {
+  const bundled = bundledHookPath();
+  if (!fs.existsSync(bundled)) {
+    vscode.window.showErrorMessage(`Claude Usage: bundled hook script missing at ${bundled}`);
+    return;
+  }
+  try {
+    const { changed, status } = installHook(bundled);
+    log(`updateHook: changed=${changed}, version=${status.installedVersion}`);
+    vscode.window.showInformationMessage(
+      changed
+        ? `Claude Usage: hook updated to ${status.installedVersion}. New turns will be logged with the new format.`
+        : 'Claude Usage: hook already up to date.'
+    );
+    computeHookOutdated(extensionContext);
+    panelProvider.update(currentState);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    vscode.window.showErrorMessage(`Claude Usage: hook update failed — ${msg}`);
+  }
 }
 
 async function maybePromptSetup(context: vscode.ExtensionContext) {
@@ -127,6 +200,7 @@ async function doSetupHook(context: vscode.ExtensionContext) {
       vscode.window.showInformationMessage('Claude Usage: hook already configured.');
     }
     context.globalState.update(SETUP_PROMPT_DECLINED_KEY, undefined);
+    computeHookOutdated(context);
     refresh();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -214,6 +288,7 @@ function refresh() {
       stats: currentState.stats,
       error: { code: 'no-log', detail: `Log file not found: ${p}` },
       lastFetchAt: currentState.lastFetchAt,
+      hookOutdated: hookOutdatedInfo,
     };
     log(`refresh: log file does not exist`);
     panelProvider.update(currentState);
@@ -227,6 +302,7 @@ function refresh() {
       stats: currentState.stats,
       error: { code: 'empty-log', detail: 'Log file exists but no parseable entries.' },
       lastFetchAt: currentState.lastFetchAt,
+      hookOutdated: hookOutdatedInfo,
     };
     log(`refresh: no parseable lines`);
   } else {
@@ -239,12 +315,14 @@ function refresh() {
       },
       error: null,
       lastFetchAt: sample.ts,
+      hookOutdated: hookOutdatedInfo,
     };
     log(`refresh: 5h=${sample.five}% (Δ${sample.fiveDelta}) week=${sample.week}% (Δ${sample.weekDelta}) stale=${sample.stale} @ ${sample.ts}`);
   }
   panelProvider.update(currentState);
   updateStatusBar();
-  if (chartPanel) refreshChart();
+  if (chartPanel) pushChartData();
+  if (tokensPanel) pushTokensData();
 }
 
 function updateStatusBar() {
@@ -292,7 +370,7 @@ class UsagePanelProvider implements vscode.WebviewViewProvider {
 
   private render() {
     if (!this.view) return;
-    this.view.webview.html = renderHtml(randomNonce(), currentState, currentSamples, getSettings());
+    this.view.webview.html = renderHtml(randomNonce(), currentState, currentSamples, getSettings(), getTokensSettings(), pricingTable);
   }
 }
 
@@ -321,12 +399,22 @@ async function openLogFile() {
   await vscode.window.showTextDocument(doc, { preview: true });
 }
 
+async function openPricingFile() {
+  const p = path.join(extensionContext.extensionPath, 'media', 'pricing.json');
+  if (!fs.existsSync(p)) {
+    vscode.window.showWarningMessage(`Claude Usage: pricing.json missing at ${p}.`);
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(p);
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
 let chartPanel: vscode.WebviewPanel | undefined;
 
 function showChart() {
   if (chartPanel) {
     chartPanel.reveal(vscode.ViewColumn.Beside);
-    refreshChart();
+    pushChartData();
     return;
   }
   chartPanel = vscode.window.createWebviewPanel(
@@ -337,18 +425,67 @@ function showChart() {
   );
   chartPanel.onDidDispose(() => { chartPanel = undefined; });
   chartPanel.webview.onDidReceiveMessage((msg: any) => {
-    if (msg && msg.type === 'settings' && msg.settings) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'settings' && msg.settings) {
       extensionContext.globalState.update(CHART_SETTINGS_KEY, msg.settings);
       // Re-render sidebar so the mini chart picks up the new settings live.
       panelProvider.update(currentState);
+    } else if (msg.type === 'ready') {
+      // Webview script has finished loading and is listening for data
+      // messages; push the latest in case the log moved between html
+      // bake and script start.
+      pushChartData();
     }
   });
-  refreshChart();
+  // Render the html shell once with initial data baked in. From here on,
+  // every log change is delivered via postMessage — the webview's JS
+  // keeps running even when the tab is hidden (retainContextWhenHidden:
+  // true), so mutations to the SVG persist and are visible immediately
+  // when the user returns to the tab.
+  const entries = readAll(getLogPath());
+  const data = prepareChartData(entries, pricingTable);
+  chartPanel.webview.html = renderChartHtml(randomNonce(), data);
 }
 
-function refreshChart() {
+function pushChartData() {
   if (!chartPanel) return;
   const entries = readAll(getLogPath());
-  const data = prepareChartData(entries);
-  chartPanel.webview.html = renderChartHtml(randomNonce(), data);
+  const data = prepareChartData(entries, pricingTable);
+  chartPanel.webview.postMessage({ type: 'data', data });
+}
+
+let tokensPanel: vscode.WebviewPanel | undefined;
+
+function showTokens() {
+  if (tokensPanel) {
+    tokensPanel.reveal(vscode.ViewColumn.Beside);
+    pushTokensData();
+    return;
+  }
+  tokensPanel = vscode.window.createWebviewPanel(
+    'claudeUsageTokens',
+    'Claude Usage — Tokens',
+    vscode.ViewColumn.Beside,
+    { enableScripts: true, enableCommandUris: true, retainContextWhenHidden: true }
+  );
+  tokensPanel.onDidDispose(() => { tokensPanel = undefined; });
+  tokensPanel.webview.onDidReceiveMessage((msg: any) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'tokenSettings' && msg.settings) {
+      extensionContext.globalState.update(TOKENS_SETTINGS_KEY, msg.settings);
+      panelProvider.update(currentState);
+    } else if (msg.type === 'ready') {
+      pushTokensData();
+    }
+  });
+  const entries = readAll(getLogPath());
+  const data = prepareChartData(entries, pricingTable);
+  tokensPanel.webview.html = renderTokensHtml(randomNonce(), data);
+}
+
+function pushTokensData() {
+  if (!tokensPanel) return;
+  const entries = readAll(getLogPath());
+  const data = prepareChartData(entries, pricingTable);
+  tokensPanel.webview.postMessage({ type: 'data', data });
 }

@@ -8,6 +8,190 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 The entire 0.x range was developed iteratively in a single working session
 (2026-05-02) — versions are very granular by design.
 
+## [0.29.0] - 2026-05-02
+### Added
+- **Mini tokens chart in the sidebar** below the existing mini limits
+  chart. Renders the same stacked-bar visualization as the full tokens
+  panel — 4 cost-tier-coloured segments per turn — at 240×96 px. Click
+  to open the full tokens panel. Top-right corner shows the totalled
+  amount in the active Y mode (`$X.XX` for USD, `123K` for tokens).
+- Tokens-chart settings (Day window, Y mode, gap, focus) sync to the
+  sidebar via `postMessage` → `globalState` → re-render, mirroring the
+  existing limits-chart sync pattern. Change Day to `7` in the full
+  tokens panel and the mini tokens chart instantly shows a week.
+
+### Changed
+- **USD is now the default Y-axis mode** on the tokens chart for new
+  users (HTML `selected` on the dropdown, plus `yMode: 'usd'` in
+  `DEFAULT_TOKENS_CHART_SETTINGS`). Existing users with explicit
+  webview state keep their previous choice; toggle once and the new
+  default sticks.
+
+## [0.28.0] - 2026-05-02
+### Fixed
+- Tokens-chart bars no longer overlap inside dense clusters of turns.
+  Bar width is now clamped to the *minimum* inter-sample gap in the
+  visible window (was the *average* gap, which under-estimated the
+  tightest spacing — clusters of fast back-to-back turns rendered as
+  a single mashed-together blob). Same upper cap of 8 px in sparse
+  regions; min cap of 1 px so a single dense burst doesn't drive
+  every bar to invisibility.
+
+## [0.27.0] - 2026-05-02
+### Added
+- **Cost calculation on the tokens chart.** New Y-axis dropdown:
+  `Tokens` / `Tokens (log)` / `USD (cost)`. In USD mode the same
+  stacked bars show per-turn dollars, segments coloured by cost tier.
+  Meta line gains `total: $X.XX` when in USD mode (or alongside totals
+  in tokens modes). Tooltip always shows both token count and dollar
+  cost per segment plus the model used for that turn.
+- `pricing.json` is loaded once at activation and passed to the chart
+  via `ChartData.pricing`. Webview does longest-prefix lookup
+  (`claude-sonnet-4-7` → `claude-sonnet-4-6` → `claude-sonnet-4-5` →
+  `claude-sonnet-4` → fallback) so log lines from a model that's
+  newer than the bundled pricing table still get a reasonable estimate.
+- Pricing snapshot fetched directly from
+  https://platform.claude.com/docs/en/about-claude/pricing on
+  2026-05-02. **Notable correction**: Opus 4.5/4.6/4.7 are now $5/$25
+  per million tokens (input/output), not $15/$75 — Anthropic dropped
+  Opus pricing significantly when 4.5 launched. Earlier Opus (4.1, 4,
+  3) and Sonnet 3.7 / Haiku 3 / Haiku 3.5 also added.
+- Pricing meta line shows the snapshot date (`prices 2026-05-02`)
+  when in USD mode so it's obvious how stale the numbers are.
+
+### Changed
+- Renamed the Y-axis log toggle from a checkbox to a 3-way dropdown.
+  Webview state migration: existing `logScale: true` is mapped to
+  `yMode: 'logTokens'` on first load.
+- Removed all Russian-language strings from the UI (a stray
+  copy-paste in the cost-calculation instructions block).
+
+## [0.26.0] - 2026-05-02
+### Added
+- Invocation log restored on the bundled hook
+  (`~/.claude/claude-usage-monitor-hook.invocations.log`). Same format as
+  v0.18: one structured line per run with parts joined by ` | ` —
+  `start | stdin=Nb | turn in=N out=N c+=N c-=N model=… | token=present
+  | mode=ok 5h=N% wk=N% | wrote=Nb | dur=Nms`. Self-rotates past 100 KB,
+  keeps the last 100 lines.
+- All previously silent `try/catch` blocks now produce labelled
+  `invokeLog(...)` entries — including `creds-missing`,
+  `creds-read-error=…`, `creds-parse-error=…`, `creds-no-token`,
+  `cache-read-error=…`, `cache-parse-error=…`, `cache-write-error=…`,
+  `api-http=N`, `api-timeout`, `api-error=CODE`, `api-parse-error=…`,
+  `api-shape-unknown`, `transcript-missing-path`, `transcript-not-found=…`,
+  `transcript-read-error=…`, `transcript-line-parse-failures=N`,
+  `stdin-error=…`, `stdin-thrown=…`, `stdin-parse-error=…`,
+  `log-mkdir-error=…`, `log-append-error=…`, `toast-error=…`,
+  `uncaught=…`, `main-rejected=…`. Final line always carries
+  `mode=ok …` or `mode=limits-fail …`.
+- `process.on('exit', flushInvocationLog)` and `process.on(
+  'uncaughtException', …)` so a crash still leaves a diagnostic line.
+
+## [0.25.0] - 2026-05-02
+### Changed
+- **Bundled hook is now the canonical user-authored hook** (was a separate
+  in-house implementation in 0.18-0.24). Single source of truth: the
+  feature-rich hook that writes the existing `turn in:N out:N c+N c-N
+  model=…  .  session N (M turns)  .  5h N% (±N%) ↻XhYm  .  week N% …`
+  format with ANSI colours stripped before disk-write. Replaces the
+  previous minimal hook that wrote only `turn (claude-usage-monitor) .
+  5h N% . week N%`. New users get the full format on first install;
+  `claudeUsage.updateHook` migrates older installs.
+- Hook adds session totals + turn count (`session 215.49M (791 turns)`)
+  to every line — the parser already tolerates this segment.
+- Optional Windows toast on every Stop event via
+  `~/.claude/hooks/show-toast.ps1` (silently no-ops if the script isn't
+  present, which is the case for fresh extension installs).
+
+### Removed
+- The dedicated invocation log (`~/.claude/claude-usage-monitor-hook.invocations.log`)
+  and labelled error categories (`creds-missing`, `api-http=…`, etc.)
+  added in v0.18.0 are not present in the new bundled hook. Diagnosis
+  for "hook installed but log not appearing" now relies on the user
+  inspecting `usage-log.txt` itself and stderr from the hook process.
+  May reintroduce later if needed.
+
+## [0.24.0] - 2026-05-02
+### Added
+- **Hook now reads `transcript_path` from the Stop-event stdin** and extracts
+  per-turn tokens (`input_tokens`, `output_tokens`,
+  `cache_creation_input_tokens`, `cache_read_input_tokens`) plus `model`
+  from the last assistant message in the transcript JSONL. Those are
+  written to `usage-log.txt` as `turn in:N out:N c+N c-N model=<id>`. The
+  shortened model id (date suffix `-YYYYMMDD` stripped) makes the line
+  cheap to read and stable across minor model releases.
+- Parser exposes `model` on `ParsedSample`, propagated through to
+  `ChartTimePoint`. Old log lines without `model=` keep `model: null` and
+  the new tokens chart still renders (cost calc will fall back to the
+  default model from `pricing.json`).
+- Hook-version detection: each hook script carries a
+  `// claude-usage-monitor-hook v=X.Y.Z` header. Plugin reads that and
+  compares to the bundled hook's version on activation.
+- **"Update hook" prompt + sidebar banner** when the installed hook is
+  older than the bundled one. Notification on activation, persistent
+  yellow-bordered banner above the sidebar stats with an in-line "Update
+  hook" button. New command `Claude Usage: Update Stop hook to bundled
+  version`.
+- `media/pricing.json` bundled with the extension, indexed by
+  model-id prefix (e.g. `claude-sonnet-4-5`), with `input` / `output` /
+  `cache_write_5m` / `cache_write_1h` / `cache_read` USD-per-million
+  rates. Source URL embedded in the file. Includes `fallback` key so
+  pre-v0.24 log lines without `model=` can still get an estimate.
+- `Claude Usage: Open pricing.json` command, plus an instructions
+  paragraph below the tokens chart explaining how to refresh prices
+  (link to the canonical Anthropic page + a copy-pasteable Russian
+  prompt for the user's Claude agent).
+- Tokens panel webview gets `enableCommandUris: true` so the new
+  "Open pricing.json" link in the instructions block actually works.
+
+## [0.23.0] - 2026-05-02
+### Changed
+- Tokens chart "Focus on data" defaults to **on** for new users (was
+  off in 0.22.0). Existing users keep whatever they had saved in
+  webview state.
+- Tokens chart bars now have a thin dark stroke (`#1e1e1e`, 0.5 px) on
+  every segment so adjacent same-coloured bars are visibly separated
+  instead of merging into one continuous block. Hover stroke (white)
+  unchanged.
+
+## [0.22.0] - 2026-05-02
+### Added
+- "Focus on data" checkbox on the tokens chart, mirroring the limits
+  chart. When the visible window has samples, clamps the X axis to
+  `[first - 1h, last + 1h]` (still inside the chosen Day range) so a
+  cluster of activity fills the chart instead of being squeezed into a
+  fraction of an empty 24-hour day. Meta line gains a `· focused`
+  suffix while active.
+
+## [0.21.0] - 2026-05-02
+### Added
+- Per-turn token data (`turn in:N out:N c+N c-N`, already written to the
+  log by the hook since v0.7.0) is now parsed onto `ParsedSample` as
+  `tokIn`, `tokOut`, `tokCacheCreate`, `tokCacheRead`. Older lines without
+  that block keep null fields and are skipped by the new chart.
+- New panel **Claude Usage — Tokens** (`Claude Usage: Show tokens chart`,
+  also a second icon `$(symbol-numeric)` in the sidebar title bar).
+  Stacked bar per turn with four cost-tier-coloured segments: output
+  (red, top-priced), input (orange), cache-create (yellow), cache-read
+  (green, cheapest). Hover gives exact numbers per segment plus total.
+  Reuses the Day-range syntax of the limits chart and shows totals for
+  the visible window in the meta line. Optional log-scale Y axis for
+  sessions with large dynamic range.
+
+### Changed
+- Chart panel data now flows over `postMessage` instead of full
+  `webview.html` reassignment. The html shell is rendered once on panel
+  creation; every subsequent log change pushes a `{type:'data',...}`
+  message to the webview, which mutates the existing SVG in place.
+  Combined with `retainContextWhenHidden: true`, this means the chart
+  keeps drawing fresh data while the panel is hidden behind other tabs
+  — when the user switches back, the SVG is already current, with no
+  re-mount/reflow flash.
+- New `ready` handshake from webview to extension on script start, so
+  the latest data is pushed even when the panel was opened from a
+  serialized state and the bake-in is stale.
+
 ## [0.20.0] - 2026-05-02
 ### Changed
 - Chart visualization is now theme-independent. The chart panel and the

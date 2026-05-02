@@ -2,7 +2,7 @@
   "name": "claude-usage-monitor",
   "displayName": "Claude Usage Monitor",
   "description": "Show Claude Code subscription limits (5h / weekly) and last-turn delta from the usage hook log.",
-  "version": "0.20.0",
+  "version": "0.29.0",
   "publisher": "owlcat-local",
   "engines": {
     "vscode": "^1.85.0"
@@ -50,6 +50,11 @@
         "icon": "$(graph-line)"
       },
       {
+        "command": "claudeUsage.showTokens",
+        "title": "Claude Usage: Show tokens chart",
+        "icon": "$(symbol-numeric)"
+      },
+      {
         "command": "claudeUsage.openLogFile",
         "title": "Claude Usage: Open usage-log.txt"
       },
@@ -62,8 +67,16 @@
         "title": "Claude Usage: Install Stop hook"
       },
       {
+        "command": "claudeUsage.updateHook",
+        "title": "Claude Usage: Update Stop hook to bundled version"
+      },
+      {
         "command": "claudeUsage.removeHook",
         "title": "Claude Usage: Remove Stop hook"
+      },
+      {
+        "command": "claudeUsage.openPricingFile",
+        "title": "Claude Usage: Open pricing.json"
       },
       {
         "command": "claudeUsage.showHookStatus",
@@ -79,7 +92,12 @@
         {
           "command": "claudeUsage.showChart",
           "when": "view == claudeUsage.panel",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeUsage.showTokens",
+          "when": "view == claudeUsage.panel",
+          "group": "navigation@2"
         }
       ]
     },
