@@ -11,9 +11,16 @@ node_modules/**
 
 # Repo docs that aren't needed in the packaged extension:
 DEV-NOTES.md
+DevChangelog.md
 CLAUDE.md
 patch.js
 *.zip
+
+# README.md is the engineer-facing GitHub version. The Marketplace details
+# page is fed by README.marketplace.md via `vsce package --readme-path …`,
+# whose content is injected as the package's README.md. Excluding the
+# engineer version here avoids shipping it inside the .vsix.
+README.md
 
 # Screenshots are for the GitHub README only:
 media/Screenshot*.png

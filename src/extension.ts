@@ -48,7 +48,7 @@ let logChannel: vscode.OutputChannel;
 let watcher: fs.FSWatcher | undefined;
 let debounce: NodeJS.Timeout | undefined;
 
-let currentState: ViewState = { stats: null, error: null, lastFetchAt: null, hookOutdated: null };
+let currentState: ViewState = { stats: null, error: null, lastFetchAt: null, hookOutdated: null, hookRegistered: false };
 
 function log(msg: string) {
   if (!logChannel) return;
@@ -217,6 +217,11 @@ async function doSetupHook(context: vscode.ExtensionContext) {
     }
     context.globalState.update(SETUP_PROMPT_DECLINED_KEY, undefined);
     computeHookOutdated(context);
+    // Activation may have skipped wiring a watcher (no log file existed).
+    // Now that the hook is registered we want to pick up the very first
+    // turn that creates the log — restart so we either watch the file
+    // (if it now exists) or the parent dir (if the hook hasn't fired yet).
+    startWatcher();
     refresh();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -277,27 +282,54 @@ function startWatcher() {
   watcher?.close();
   watcher = undefined;
   const p = getLogPath();
-  if (!fs.existsSync(p)) {
-    log(`watcher: log file does not exist (${p}); will retry on next change`);
+  const scheduleRefresh = (reason: string) => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      log(`watcher: ${reason}`);
+      refresh();
+    }, 200);
+  };
+
+  if (fs.existsSync(p)) {
+    try {
+      watcher = fs.watch(p, () => scheduleRefresh('log changed'));
+      log(`watcher: watching ${p}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`watcher ERROR: ${msg}`);
+    }
+    return;
+  }
+
+  // Log file doesn't exist yet — most commonly because the user just
+  // installed the hook and hasn't completed a turn yet. Watch the parent
+  // directory so the sidebar flips to live-data state automatically when
+  // the hook fires for the first time, instead of waiting for some
+  // unrelated event (visibility change, manual refresh) to pick it up.
+  const dir = path.dirname(p);
+  const filename = path.basename(p);
+  if (!fs.existsSync(dir)) {
+    log(`watcher: parent directory missing (${dir}); cannot watch for log creation`);
     return;
   }
   try {
-    watcher = fs.watch(p, () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        log(`watcher: log changed`);
-        refresh();
-      }, 200);
+    watcher = fs.watch(dir, (_event, file) => {
+      if (file && file.toString() !== filename) return;
+      if (!fs.existsSync(p)) return;
+      log(`watcher: log file appeared at ${p}; rebinding`);
+      startWatcher();
+      scheduleRefresh('log created');
     });
-    log(`watcher: watching ${p}`);
+    log(`watcher: watching parent ${dir} for ${filename}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`watcher ERROR: ${msg}`);
+    log(`watcher ERROR (parent dir): ${msg}`);
   }
 }
 
 function refresh() {
   const p = getLogPath();
+  const hookRegistered = getHookStatus().registered;
   if (!fs.existsSync(p)) {
     currentSamples = [];
     currentState = {
@@ -305,6 +337,7 @@ function refresh() {
       error: { code: 'no-log', detail: `Log file not found: ${p}` },
       lastFetchAt: currentState.lastFetchAt,
       hookOutdated: hookOutdatedInfo,
+      hookRegistered,
     };
     log(`refresh: log file does not exist`);
     panelProvider.update(currentState);
@@ -319,6 +352,7 @@ function refresh() {
       error: { code: 'empty-log', detail: 'Log file exists but no parseable entries.' },
       lastFetchAt: currentState.lastFetchAt,
       hookOutdated: hookOutdatedInfo,
+      hookRegistered,
     };
     log(`refresh: no parseable lines`);
   } else {
@@ -332,6 +366,7 @@ function refresh() {
       error: null,
       lastFetchAt: sample.ts,
       hookOutdated: hookOutdatedInfo,
+      hookRegistered,
     };
     log(`refresh: 5h=${sample.five}% (Δ${sample.fiveDelta}${sample.fiveWindowReset ? ' RESET' : ''}) week=${sample.week}% (Δ${sample.weekDelta}${sample.weekWindowReset ? ' RESET' : ''}) stale=${sample.stale} @ ${sample.ts}`);
   }

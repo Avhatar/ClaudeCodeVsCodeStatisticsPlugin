@@ -465,10 +465,12 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
         sum5 += p.fiveDelta; n5++;
         if (p.fiveDelta < -0.005) hasResetIn = true;
       }
+      if (p.fiveWindowReset) hasResetIn = true;
       if (typeof p.weekDelta === 'number' && isFinite(p.weekDelta)) {
         sumW += p.weekDelta; nw++;
         if (p.weekDelta < -0.005) hasResetWk = true;
       }
+      if (p.weekWindowReset) hasResetWk = true;
     }
     const span = fmtSpan(fromMs, toMs);
     const dur = fmtDur(toMs - fromMs);
@@ -679,17 +681,20 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
       }
     }
 
-    // Reset markers: vertical dashed lines where the limit dropped.
+    // Reset markers: vertical dashed lines where the underlying window flipped.
+    // Two triggers: legacy "value dropped" (covers e.g. 80% -> 0% when new
+    // window starts low) and the parser-set windowReset flag (covers e.g.
+    // 44% -> 100% when the new window's first reading exceeds the old).
     for (let i = 1; i < visible.length; i++) {
       const cur = visible[i], prev = visible[i - 1];
       const x = xOf(cur.tsMs);
-      if (cur.five < prev.five) {
+      if (cur.five < prev.five || cur.fiveWindowReset) {
         svg.appendChild(el('line', {
           x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
           stroke: fiveMid, 'stroke-width': '1', 'stroke-dasharray': '4 4', 'stroke-opacity': '0.65',
         }));
       }
-      if (cur.week < prev.week) {
+      if (cur.week < prev.week || cur.weekWindowReset) {
         svg.appendChild(el('line', {
           x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
           stroke: weekMid, 'stroke-width': '1', 'stroke-dasharray': '4 4', 'stroke-opacity': '0.65',
@@ -743,7 +748,7 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     }
 
     const breakOnReset = breakOnResetInput.checked;
-    function lineFor(getY, color) {
+    function lineFor(getY, getReset, color) {
       const segs = [];
       for (let i = 0; i < visible.length; i++) {
         const p = visible[i];
@@ -751,14 +756,14 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
         const y = yOf(getY(p)).toFixed(1);
         const prev = visible[i - 1];
         const tooFar = prev && gapMs > 0 && (p.tsMs - prev.tsMs) > gapMs;
-        const dropped = prev && breakOnReset && getY(p) < getY(prev);
+        const dropped = prev && breakOnReset && (getY(p) < getY(prev) || getReset(p));
         const breakHere = i === 0 || tooFar || dropped;
         segs.push((breakHere ? 'M' : 'L') + x + ' ' + y);
       }
       svg.appendChild(el('path', { d: segs.join(' '), fill: 'none', stroke: color, 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
     }
-    lineFor(p => p.week, 'url(#weekGrad)');
-    lineFor(p => p.five, 'url(#fiveGrad)');
+    lineFor(p => p.week, p => p.weekWindowReset, 'url(#weekGrad)');
+    lineFor(p => p.five, p => p.fiveWindowReset, 'url(#fiveGrad)');
 
     // Two circles per turn (week + 5h) inside one <g class="point-group">,
     // so hover on the hit-area can highlight both at once via a single

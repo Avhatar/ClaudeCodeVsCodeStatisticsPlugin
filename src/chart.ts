@@ -10,6 +10,8 @@ export interface ChartTimePoint {
   weekDelta: number | null;
   fiveResetsIn: string | null;
   weekResetsIn: string | null;
+  fiveWindowReset: boolean;
+  weekWindowReset: boolean;
   stale: boolean;
   tokIn: number | null;
   tokOut: number | null;
@@ -40,6 +42,8 @@ export function prepareChartData(entries: ParsedSample[], pricing: PricingTable 
       weekDelta: e.weekDelta,
       fiveResetsIn: e.fiveResetsIn,
       weekResetsIn: e.weekResetsIn,
+      fiveWindowReset: e.fiveWindowReset,
+      weekWindowReset: e.weekWindowReset,
       stale: e.stale,
       tokIn: e.tokIn,
       tokOut: e.tokOut,

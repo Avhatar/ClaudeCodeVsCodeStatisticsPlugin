@@ -7,6 +7,7 @@ export interface ViewState {
   error: { code: string; detail?: string } | null;
   lastFetchAt: string | null;
   hookOutdated: { installed: string | null; bundled: string } | null;
+  hookRegistered: boolean;
 }
 
 export function renderHtml(
@@ -27,7 +28,7 @@ export function renderHtml(
       + renderTokensMiniChart(samples, tokensSettings, pricing)
       + renderSettings(settings, settingsOpen);
   } else if (state.error) {
-    body = renderError(state.error);
+    body = renderError(state.error, state.hookRegistered);
   } else {
     body = renderLoading();
   }
@@ -311,7 +312,17 @@ function renderUpdateBanner(info: { installed: string | null; bundled: string })
   </div>`;
 }
 
-function renderError(err: { code: string; detail?: string }): string {
+function renderError(err: { code: string; detail?: string }, hookRegistered: boolean): string {
+  // Hook already registered but log file is absent: the Stop hook just hasn't
+  // fired yet. Show a friendly waiting state instead of pushing the user back
+  // to the install button — that was the source of the "I clicked install but
+  // the install button is still here" confusion.
+  if (err.code === 'no-log' && hookRegistered) {
+    return `<div class="err">
+      <p>Hook installed</p>
+      <div>Waiting for the first Claude Code turn — the log will populate as soon as a response completes.</div>
+    </div>`;
+  }
   const setupLink = `<p><a href="command:claudeUsage.setupHook" class="btn">Install hook</a> &nbsp; <a href="command:claudeUsage.showHookStatus">Status</a></p>`;
   const hint =
     err.code === 'no-log' ? `Claude Code <b>Stop</b> hook is not configured — no usage log to read.${setupLink}` :
@@ -559,7 +570,7 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
   const weekMid = midColor(s.weekSat, s.weekFade);
   const gapMs = s.gap * 60 * 60 * 1000;
 
-  function pathFor(getY: (p: ParsedSample) => number): string {
+  function pathFor(getY: (p: ParsedSample) => number, getReset: (p: ParsedSample) => boolean): string {
     const segs: string[] = [];
     for (let i = 0; i < visible.length; i++) {
       const p = visible[i];
@@ -567,7 +578,12 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
       const y = yOf(getY(p)).toFixed(1);
       const prev = visible[i - 1];
       const tooFar = prev && gapMs > 0 && (p.tsMs - prev.tsMs) > gapMs;
-      const dropped = prev && s.breakOnReset && getY(p) < getY(prev);
+      // breakOnReset triggers on either (a) the value dropped below prev — the
+      // legacy heuristic that catches "100% -> 0% after a window flip" — or
+      // (b) the parser flagged this sample as a window reset (catches the
+      // inverse case where the new window starts ABOVE prev's value, e.g. a
+      // 44% -> 100% spike at window flip — the user's 2026-05-03 incident).
+      const dropped = prev && s.breakOnReset && (getY(p) < getY(prev) || getReset(p));
       const breakHere = i === 0 || tooFar || dropped;
       segs.push((breakHere ? 'M' : 'L') + x + ' ' + y);
     }
@@ -588,15 +604,18 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
     }
   }
 
-  // Reset markers (actual + predicted)
+  // Reset markers (actual + predicted). Trigger on either the legacy
+  // "value dropped" heuristic OR the parser-set windowReset flag, which
+  // also catches resets where the new window's first sample reads HIGHER
+  // than the old window's last reading.
   let resetLines = '';
   for (let i = 1; i < visible.length; i++) {
     const cur = visible[i], prev = visible[i - 1];
     const x = xOf(cur.tsMs).toFixed(1);
-    if (cur.five < prev.five) {
+    if (cur.five < prev.five || cur.fiveWindowReset) {
       resetLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="${fiveMid}" stroke-width="0.7" stroke-dasharray="2 2" stroke-opacity="0.6"/>`;
     }
-    if (cur.week < prev.week) {
+    if (cur.week < prev.week || cur.weekWindowReset) {
       resetLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="${weekMid}" stroke-width="0.7" stroke-dasharray="2 2" stroke-opacity="0.6"/>`;
     }
   }
@@ -669,8 +688,8 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
           ${gridStops}
           ${dayLines}
           ${resetLines}
-          <path d="${pathFor(p => p.week)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="${pathFor(p => p.five)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="${pathFor(p => p.week, p => p.weekWindowReset)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="${pathFor(p => p.five, p => p.fiveWindowReset)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
           ${forecastPath}
         </svg>
       </a>

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// claude-usage-monitor-hook v=0.26.0
+// claude-usage-monitor-hook v=0.45.0
 // Stop hook for Claude Code, installed by the "Claude Usage Monitor" VSCode
 // extension. On each Stop event:
 //   1. Reads transcript_path from stdin and walks the JSONL backwards to
@@ -9,7 +9,6 @@
 //   2. Calls the OAuth `usage` endpoint to get 5h/weekly utilization.
 //   3. Appends a single human-readable + machine-parseable line to
 //      ~/.claude/usage-log.txt.
-//   4. Optionally pops a Windows toast via show-toast.ps1 if present.
 //
 // HOOK_VERSION + the `v=...` comment above are how the extension detects
 // whether the installed copy is older than the bundled one and offers an
@@ -24,13 +23,12 @@
 // **No silent try/catch** anywhere — every failure has a labelled
 // invokeLog() call so post-mortem diagnosis works.
 
-const HOOK_VERSION = '0.26.0';
+const HOOK_VERSION = '0.45.0';
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
-const { spawnSync } = require('child_process');
 
 const TMP_DIR = process.env.TEMP || process.env.TMP || os.tmpdir();
 const CACHE_FILE = path.join(TMP_DIR, 'claude-code-usage-limits.json');
@@ -382,35 +380,6 @@ function appendLog(line) {
     }
 }
 
-// --- Toast (Windows-only convenience, silent no-op elsewhere) --------------
-
-function showToast(title, line1, line2) {
-    if (process.platform !== 'win32') return;
-    const psScript = path.join(os.homedir(), '.claude', 'hooks', 'show-toast.ps1');
-    if (!fs.existsSync(psScript)) return;
-    try {
-        spawnSync('powershell.exe', [
-            '-NoProfile',
-            '-NonInteractive',
-            '-ExecutionPolicy', 'Bypass',
-            '-WindowStyle', 'Hidden',
-            '-File', psScript,
-            '-Title', title,
-            '-Line1', line1,
-            '-Line2', line2,
-        ], {
-            stdio: 'ignore',
-            windowsHide: true,
-            timeout: 2500,
-        });
-    } catch (err) {
-        // Toast is best-effort; one failure isn't worth aborting on, but it
-        // should still be visible in the invocation log so we can see if
-        // PowerShell starts misbehaving on this machine.
-        invokeLog(`toast-error=${err.message}`);
-    }
-}
-
 // --- Main flow -------------------------------------------------------------
 
 async function main() {
@@ -471,10 +440,6 @@ async function main() {
 
     const coloredLine = buildLogLine(last, total, sessionTotal, turns, limits, delta, limitsError, model);
     appendLog(coloredLine);
-
-    const toastTitle = buildToastTitle(delta, limits, limitsError);
-    const toastLine1 = buildToastLine1(limits, limitsError);
-    showToast(toastTitle, toastLine1, '');
 }
 
 function computeDelta(prev, curr) {
@@ -526,29 +491,6 @@ function buildLogLine(last, _total, sessionTotal, turns, limits, delta, limitsEr
         segs.push(`${ANSI.gray}limits: n/a${limitsError ? ` (${limitsError})` : ''}${ANSI.reset}`);
     }
     return segs.join(`  ${ANSI.dim}.${ANSI.reset}  `);
-}
-
-function fmtDeltaInt(d) {
-    if (d == null) return '—';
-    const r = Math.round(d);
-    if (r > 0) return `+${r}%`;
-    if (r < 0) return `${r}%`;
-    return '+0%';
-}
-
-function buildToastTitle(delta, limits, limitsError) {
-    if (delta && (delta.five != null || delta.week != null))
-        return `${fmtDeltaInt(delta.five)}; ${fmtDeltaInt(delta.week)}`;
-    if (limits) return '—; —';
-    return `n/a${limitsError ? ` (${limitsError})` : ''}`;
-}
-
-function buildToastLine1(limits, limitsError) {
-    if (!limits || (limits.five == null && limits.week == null))
-        return `--; --${limitsError ? ` (${limitsError})` : ''}`;
-    const f = limits.five != null ? `${limits.five.toFixed(0)}%` : '—';
-    const w = limits.week != null ? `${limits.week.toFixed(0)}%` : '—';
-    return `${f}; ${w}`;
 }
 
 main().then(

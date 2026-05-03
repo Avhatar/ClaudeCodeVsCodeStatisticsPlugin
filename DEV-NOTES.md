@@ -1,11 +1,11 @@
 # Claude Usage Monitor — Dev Notes
 
-> **Last updated:** 2026-05-03, against version **0.41.0**.
+> **Last updated:** 2026-05-03, against version **0.47.0**.
 > Bump this header when you revise the file so future-you knows whether it tracks the current code.
 
 VS Code extension that surfaces Claude Code subscription usage (5h / weekly windows) in a sidebar, status bar, and chart panel.
 
-Built iteratively in one working session (May 2026, started from empty `x:\Projects\VsCodePlugins`). Current shipped version: **0.41.0**.
+Built iteratively in one working session (May 2026, started from empty `x:\Projects\VsCodePlugins`). Current shipped version: **0.43.0**.
 
 ## Why this architecture (read first)
 
@@ -230,9 +230,11 @@ From `claude-usage-monitor/`:
 ```powershell
 npm install                                                   # one-time
 npm run compile                                                # tsc -> out/
-npx --yes @vscode/vsce package --skip-license --allow-missing-repository
+npx --yes @vscode/vsce package --skip-license --allow-missing-repository --readme-path README.marketplace.md
 code --install-extension claude-usage-monitor-<version>.vsix
 ```
+
+The `--readme-path README.marketplace.md` flag is required — without it the Marketplace details page would show the engineer-facing `README.md` (with architecture and clone/build instructions) instead of the user-facing slim version. See the "Two READMEs" note in [CLAUDE.md](./CLAUDE.md).
 
 The `vsce package` command output is what the user installs. After install, the user must run `Developer: Reload Window` for the new version to take effect (VS Code does NOT auto-reload extensions on update — burned us multiple times in this session). For chart-panel-only changes, also close and reopen the panel: `retainContextWhenHidden: true` keeps webviews alive across reloads.
 
@@ -291,6 +293,8 @@ For full per-version notes see [CHANGELOG.md](./CHANGELOG.md). A condensed view:
 - **0.23.0** — tokens chart "Focus on data" now defaults to on (HTML `checked`), with saved webview state still winning over the default. Bar segments gain a 0.5 px `#1e1e1e` stroke so adjacent same-coloured bars don't merge — was a real readability problem with consecutive cache-read-heavy turns where two green bars looked like one wide one.
 - **0.25.0** — bundled hook is replaced with the canonical user-authored implementation that already writes the rich `turn in:N out:N c+N c-N model=…  .  session N (M turns)  .  5h … week …` format with ANSI colours (stripped before append). Single source of truth — same code is the one running on the maintainer's machine and the one installed on fresh setups. Adds session totals + turn count to every line; optional Windows toast via `show-toast.ps1` (silent no-op if absent). Trade-off: no invocation log + labelled error categories from v0.18; if "hook installed but log empty" complaints recur we can re-add. Hook still carries the `// claude-usage-monitor-hook v=0.25.0` marker so the plugin's `readHookVersion()` keeps working — `installHook` writes the new content to `~/.claude/hooks/claude-usage-monitor-hook.js` and the version-mismatch banner offers an update from older bundled v0.18-0.24 installs.
 - **0.26.0** — invocation log restored on the v0.25 hook (we walked back the trade-off — still nice to keep diagnostic capability). `~/.claude/claude-usage-monitor-hook.invocations.log` self-rotates past 100 KB; every previously silent `try/catch` now has a labelled `invokeLog(...)` (about 20 distinct labels, see CHANGELOG for the full list). `process.on('exit', flushInvocationLog)` + `process.on('uncaughtException', ...)` cover crash paths. The user-facing log line written to `usage-log.txt` is byte-identical to v0.25 — only the diagnostic side-channel was added.
+- **0.45.0** — removed the bundled hook's Windows toast (`showToast`, `buildToastTitle`, `buildToastLine1`, the `child_process.spawnSync` import, and the call site in `main()`). Hook header bumped to v=0.45.0 so existing v0.26 installs get the update banner and overwrite. `~/.claude/hooks/show-toast.ps1` is no longer referenced anywhere — safe to delete by hand.
+- **0.43.0** — chart visual catches up with the 0.41 reset-detection. `ChartTimePoint` now carries `fiveWindowReset` / `weekWindowReset` flags from the parsed sample. The break-on-reset logic in both the limits chart panel inline JS (`chartView.ts:lineFor`) and the sidebar mini chart (`webview.ts:pathFor`) ORs the existing "value < prev" check with `getReset(p)` so a flag-only reset (e.g. 44% -> 100% at flip, then 100% -> 2% an hour later) splits the line into separate segments. Reset-marker draw loops in both files also OR with the flag, so the dashed vertical appears at flag-only resets. Selection summary on the limits chart recognises the flag too so the "includes a window reset" hint shows even when the signed sum doesn't go negative. No hook changes — flag is set in the parser based on the existing `↻` countdown.
 - **0.41.0** — window-reset detection in the parser. The bundled hook writes a blind `curr% - prev%` delta into each log line; when the 5h or weekly window flipped between two consecutive Stop fires, that delta compares two different windows and is meaningless (the user reported a `+56% since last fetch` reading when only $0.03 had actually been spent in the new window). `readAll` now compares each sample's `↻` countdown against the previous sample's. The countdown can only decrease as time passes — a significant increase (`> 1 min`) implies the underlying window reset, so the parser nulls the across-window delta and sets `fiveWindowReset` / `weekWindowReset` on the sample. Surfaced in `UsageWindow.windowReset`, consumed by the sidebar turn cards (show "window reset / new window"), the progress-bar Δ line ("new window — Δ vs previous fetch is across windows, hidden"), and the status bar (`NN% (reset)`). `summarizeByDay` increments the reset counter via the flag when present, falling back to the old `delta <= -1` heuristic for legacy entries.
 - **0.40.0** — hovered bar/points highlighted via CSS. tokensView wraps each turn's stack of `bar-rect` segments in `<g class="bar-group">`; the per-turn hit-area's mouseenter toggles `.is-hover` on the group, CSS targets `.bar-group.is-hover .bar-rect` with a white stroke. chartView restructured pointsFor → an inline loop building one `<g class="point-group">` per turn containing both the week and 5h circles; hit-area toggles `.is-hover`, CSS bumps stroke-width and `r` (works in modern browsers via SVG2 CSS). Module-level arrays `barGroups` / `pointGroups` map turn index → group element so the hit-area loop can reference them directly.
 - **0.39.0** — capped the 0.38 Voronoi hit-areas at `MAX_HALF_PX = 20` per side. Half-width on each side of the bar is `min(MAX_HALF_PX, distance-to-neighbour-midpoint)` instead of the raw midpoint. Edge of plot uses `MAX_HALF_PX` instead of plot edge. Sparse charts no longer trigger tooltips for points hours away from the cursor.

@@ -27,8 +27,14 @@ When changing any of them, update ALL relevant copies in the same change. If thi
 ## Release discipline
 
 - Bump `version` in `package.json` before every install. VS Code does not reliably re-load the same version, even after `Developer: Reload Window`.
-- After any `src/` change: `npm run compile` → `npx --yes @vscode/vsce package --skip-license --allow-missing-repository` → `code --install-extension claude-usage-monitor-<version>.vsix` → tell the user to run `Developer: Reload Window` (and reopen the chart panel if it was open — `retainContextWhenHidden: true` keeps webviews alive across reloads).
-- **As soon as you bump the version and run `vsce package`** — before moving on to anything else — update [CHANGELOG.md](./CHANGELOG.md) with a new section at the top (Keep a Changelog format) and bump the "Last updated" header in [DEV-NOTES.md](./DEV-NOTES.md) to match. Don't defer; deferred docs become wrong docs.
+- After any `src/` change: `npm run compile` → `npx --yes @vscode/vsce package --skip-license --allow-missing-repository --readme-path README.marketplace.md` → `code --install-extension claude-usage-monitor-<version>.vsix` → tell the user to run `Developer: Reload Window` (and reopen the chart panel if it was open — `retainContextWhenHidden: true` keeps webviews alive across reloads).
+- The `--readme-path README.marketplace.md` flag is mandatory. Without it, vsce ships the engineer-facing `README.md` (architecture, clone/build, contributing) to the Marketplace, which is wrong audience.
+- **As soon as you bump the version and run `vsce package`** — before moving on to anything else — update both changelogs and bump the "Last updated" header in [DEV-NOTES.md](./DEV-NOTES.md) to match. Don't defer; deferred docs become wrong docs.
+  - [CHANGELOG.md](./CHANGELOG.md) is user-facing and shipped on the Marketplace. Keep entries short and what-changed only — no root causes, file paths, internal symbols, or rationale. One line per bullet where possible.
+  - [DevChangelog.md](./DevChangelog.md) is the detailed per-version notebook for us — root causes, code paths, design decisions, the kind of nuance you'd write for future-you. This file is `.vscodeignore`-d, so verbosity is fine here. Every version bump must add a section here too.
+- Two READMEs, one source of truth per audience. When a change touches user-visible features, commands, or settings, update **both** files — they share the user-facing sections, so they will drift if you only edit one.
+  - [README.md](./README.md) is the GitHub view. Engineer-focused: includes the user-facing sections plus an Architecture / Contributing section with clone/build/packaging instructions.
+  - [README.marketplace.md](./README.marketplace.md) is what the Marketplace details page shows (via `vsce package --readme-path`). User-facing only: no architecture or contributor blurb. Intentionally slimmer than the GitHub one.
 
 ## Style
 
