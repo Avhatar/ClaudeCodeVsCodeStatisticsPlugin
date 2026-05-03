@@ -22,9 +22,8 @@ The extension is a passive reader of `~/.claude/usage-log.txt`, which is populat
 
 ## Screenshots
 
-<img src="media/Screenshot1.png" alt="Sidebar with Last Turn, 5h and Weekly bars, mini chart" width="380">
+<img src="media/Screenshot1.png" alt="" width="957">
 
-<img src="media/Screenshot2.png" alt="Chart panel with day-range input, gradients, reset markers, options" width="900">
 
 ## Requirements
 
