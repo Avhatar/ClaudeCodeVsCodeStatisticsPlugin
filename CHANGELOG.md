@@ -8,6 +8,21 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 The entire 0.x range was developed iteratively in a single working session
 (2026-05-02) — versions are very granular by design.
 
+## [0.30.0] - 2026-05-03
+### Fixed
+- Tokens chart could throw `TypeError: undefined is not iterable` and
+  silently fail to render when the visible window contained no
+  cost-bearing turns (e.g. Day=1-2 with today empty). `pickYTicks(0)`
+  was returning the wrong shape (`[{v:0,y:1}]` instead of
+  `{ticks:[0],top:1}`), and the Y-axis loop blew up on the missing
+  `.ticks` array. Now returns the correct shape — empty windows render
+  the "No token data" message cleanly.
+- Sidebar mini tokens chart Y-axis now scales to actual data (rounded
+  up to the next nice 1/2/5 step) instead of flooring at 1. In USD
+  mode where max-stack is typically $0.20-$0.50, the floor squashed
+  every bar to ~25% of plot height; bars now use the full vertical
+  range like the main chart does.
+
 ## [0.29.0] - 2026-05-02
 ### Added
 - **Mini tokens chart in the sidebar** below the existing mini limits

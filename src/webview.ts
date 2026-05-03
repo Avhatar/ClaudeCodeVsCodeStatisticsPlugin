@@ -612,7 +612,19 @@ function renderTokensMiniChart(samples: ParsedSample[], s: TokensChartSettings, 
       return PAD.top + PH - Math.max(0, Math.min(1, t)) * PH;
     };
   } else {
-    const top = Math.max(maxStack, 1);
+    // Pick the upper bound from the actual data magnitude, not a fixed
+    // floor of 1. In USD mode max-stack is often $0.20-$0.50 — flooring
+    // to $1 squashed every bar to ~25% of the plot height. Round up to
+    // the next nice 1/2/5 step so the visual matches the main chart.
+    let top: number;
+    if (maxStack <= 0) {
+      top = 1;
+    } else {
+      const mag = Math.pow(10, Math.floor(Math.log10(maxStack)));
+      const norm = maxStack / mag;
+      const niceTop = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+      top = niceTop * mag;
+    }
     yScale = (v) => PAD.top + PH - (Math.max(0, Math.min(top, v)) / top) * PH;
   }
 

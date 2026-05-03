@@ -311,7 +311,7 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
 
   // For linear scale, pick ~5 nice round Y ticks up to maxV.
   function pickYTicks(maxV) {
-    if (maxV <= 0) return [{ v: 0, y: 1 }];
+    if (maxV <= 0) return { ticks: [0], top: 1 };
     const targetCount = 5;
     const rawStep = maxV / targetCount;
     const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
