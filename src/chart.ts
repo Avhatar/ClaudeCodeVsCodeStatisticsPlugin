@@ -23,9 +23,10 @@ export interface ChartData {
   generatedAt: string;
   generatedAtMs: number;
   pricing: PricingTable | null;
+  vscodeSkin: boolean;
 }
 
-export function prepareChartData(entries: ParsedSample[], pricing: PricingTable | null = null): ChartData {
+export function prepareChartData(entries: ParsedSample[], pricing: PricingTable | null = null, vscodeSkin: boolean = false): ChartData {
   const samples: ChartTimePoint[] = [];
   for (const e of entries) {
     const t = new Date(e.ts).getTime();
@@ -54,5 +55,6 @@ export function prepareChartData(entries: ParsedSample[], pricing: PricingTable 
     generatedAt: new Date(now).toISOString(),
     generatedAtMs: now,
     pricing,
+    vscodeSkin,
   };
 }

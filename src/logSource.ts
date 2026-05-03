@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { parseDur } from './chartLogic';
 
 export const DEFAULT_LOG_PATH = path.join(os.homedir(), '.claude', 'usage-log.txt');
 
@@ -8,6 +9,7 @@ export interface UsageWindow {
   percent: number;
   resetsIn: string | null;
   delta: number | null;
+  windowReset: boolean;
 }
 
 export interface UsageStats {
@@ -25,6 +27,8 @@ export interface ParsedSample {
   weekDelta: number | null;
   fiveResetsIn: string | null;
   weekResetsIn: string | null;
+  fiveWindowReset: boolean;
+  weekWindowReset: boolean;
   stale: boolean;
   tokIn: number | null;
   tokOut: number | null;
@@ -75,6 +79,8 @@ export function parseLine(line: string): RawSample | null {
       weekDelta: g.wkd ? parseFloat(g.wkd) : null,
       fiveResetsIn: g.h5r ?? null,
       weekResetsIn: g.wkr ?? null,
+      fiveWindowReset: false,
+      weekWindowReset: false,
       stale: false,
       ...extractTokens(line),
     };
@@ -93,6 +99,8 @@ export function parseLine(line: string): RawSample | null {
       weekDelta: null,
       fiveResetsIn: null,
       weekResetsIn: null,
+      fiveWindowReset: false,
+      weekWindowReset: false,
       stale: true,
       ...extractTokens(line),
     };
@@ -125,10 +133,34 @@ export function readAll(filePath: string): ParsedSample[] {
   }
   // Drop stale samples that came before any valid one (no fallback available).
   const filtered = out.filter(e => !isNaN(e.five) && !isNaN(e.week));
-  // Compute missing deltas from neighbours.
+  // Compute missing deltas from neighbours, and detect window resets.
+  // The hook writes deltas as a blind `curr% - prev%`, which is meaningless
+  // when the underlying 5h/week window reset between fetches: the prev sample
+  // measured one window, the curr sample measures a fresh one. We detect such
+  // a reset via the `↻` countdown — it can only decrease as time passes, so a
+  // significant increase between consecutive samples means the window flipped.
+  // When detected, null out the delta and mark the window-reset flag so the UI
+  // can show "window reset" instead of a misleading "+56%".
+  const RESET_EPSILON_MS = 60_000;
   for (let i = 1; i < filtered.length; i++) {
-    if (filtered[i].fiveDelta == null) filtered[i].fiveDelta = round2(filtered[i].five - filtered[i - 1].five);
-    if (filtered[i].weekDelta == null) filtered[i].weekDelta = round2(filtered[i].week - filtered[i - 1].week);
+    const prev = filtered[i - 1];
+    const cur = filtered[i];
+    const fivePrevMs = parseDur(prev.fiveResetsIn);
+    const fiveCurMs = parseDur(cur.fiveResetsIn);
+    if (fivePrevMs != null && fiveCurMs != null && fiveCurMs > fivePrevMs + RESET_EPSILON_MS) {
+      cur.fiveWindowReset = true;
+      cur.fiveDelta = null;
+    } else if (cur.fiveDelta == null) {
+      cur.fiveDelta = round2(cur.five - prev.five);
+    }
+    const weekPrevMs = parseDur(prev.weekResetsIn);
+    const weekCurMs = parseDur(cur.weekResetsIn);
+    if (weekPrevMs != null && weekCurMs != null && weekCurMs > weekPrevMs + RESET_EPSILON_MS) {
+      cur.weekWindowReset = true;
+      cur.weekDelta = null;
+    } else if (cur.weekDelta == null) {
+      cur.weekDelta = round2(cur.week - prev.week);
+    }
   }
   return filtered;
 }

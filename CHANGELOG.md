@@ -8,6 +8,142 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 The entire 0.x range was developed iteratively in a single working session
 (2026-05-02) — versions are very granular by design.
 
+## [0.41.0] - 2026-05-03
+### Fixed
+- Δ figures on the sidebar and status bar are no longer computed across
+  a window boundary. Previously, when the 5h (or weekly) window reset
+  between two consecutive Stop-hook fetches, the bundled hook still
+  wrote a blind `curr% - prev%` delta — which compared two different
+  windows and surfaced as e.g. `+56% since last fetch` even though only
+  pennies were spent in the new window. The parser now detects window
+  flips by tracking the `↻` countdown across samples (the countdown can
+  only decrease as time passes; an increase implies the window reset),
+  nulls out the across-window delta, and marks the sample with
+  `fiveWindowReset` / `weekWindowReset`. The sidebar turn card shows
+  "window reset / new window" in place of the bogus number, the
+  progress-bar Δ line is replaced with "new window — Δ vs previous
+  fetch is across windows, hidden", and the status bar shows
+  `100% (reset)` instead of `100% (+56%)`. Daily summary's reset
+  counter still increments via the new flag (the negative-delta
+  heuristic still works for older log lines without the flag).
+
+## [0.40.0] - 2026-05-03
+### Added
+- The bar (or pair of points) under the cursor is now visually
+  highlighted while the tooltip is showing — white-ish stroke on the
+  tokens-chart bar segments, fatter stroke + slightly larger radius
+  on the limits-chart circles. Each turn's bars/points are wrapped
+  in a `<g>` and the hit-area toggles a CSS class on it.
+
+## [0.39.0] - 2026-05-03
+### Fixed
+- 0.38's per-turn hit-areas were Voronoi cells with no upper-size
+  cap — on sparse data they stretched to hours, so hovering far
+  from any bar still triggered a tooltip. Each side of the hit zone
+  is now capped at 20 px regardless of neighbour distance. Dense
+  charts still get full coverage; sparse charts limit hovers to ±20
+  px around each bar.
+
+## [0.38.0] - 2026-05-03
+### Fixed
+- Hovering individual bars/points on the charts is no longer a
+  pixel-precision exercise. Both panels now draw an invisible
+  full-height "hit area" rect per turn, spanning from the midpoint
+  to the previous turn to the midpoint to the next (Voronoi-style),
+  with the tooltip handler bound to the rect instead of the bar/
+  circle. Bars and circles render as before but with `pointer-events:
+  none`. Drag-to-select still works because pointer events bubble
+  from the rect to the SVG.
+
+## [0.37.0] - 2026-05-03
+### Fixed
+- Chart tooltip no longer escapes the visible viewport when hovering
+  over points/bars near the right or bottom edge. New
+  `positionTooltip(pageX, pageY)` helper measures the tooltip after
+  innerHTML is set and flips it to the opposite side of the cursor
+  if the default lower-right offset would overflow. Applied in both
+  the limits chart and the tokens chart.
+
+## [0.36.0] - 2026-05-03
+### Changed
+- Settings dropdown moved to the bottom of the sidebar (below the
+  mini charts) so it doesn't push the primary stats off-screen.
+- Toggling any option no longer collapses the dropdown. Native
+  `<details>` resets its open-state on every `webview.html` replace,
+  so we replaced it with a manual structure: open-state lives in
+  extension memory (`settingsOpen` flag), summary is a `command:`
+  link that flips it, options are conditionally rendered.
+
+## [0.35.0] - 2026-05-03
+### Added
+- **Settings dropdown in the sidebar** (collapsed by default).
+  Currently holds two toggles, both sticky in `globalState`:
+  - `Show USD spent` (default ON) — hides/shows the per-window and
+    per-turn dollar amounts added in 0.34.
+  - `VS Code skin support` (default OFF) — moved here from the
+    limits chart options. Single source of truth now.
+- New commands `claudeUsage.toggleShowUsdSpent` and
+  `claudeUsage.toggleVscodeSkin`. Each flips the corresponding
+  `ChartSettings` flag, re-renders the sidebar, and pushes fresh
+  `ChartData` (with the new `vscodeSkin`) to any open chart panel
+  so they re-theme without a panel reload.
+
+### Changed
+- Limits chart no longer carries its own `Enable VS Code skin
+  support` checkbox. Theme is applied from `ChartData.vscodeSkin`
+  on every render — same pattern the tokens panel already used.
+
+## [0.34.0] - 2026-05-03
+### Added
+- **Window cost in the sidebar.** The 5-Hour Limit and Weekly Limit
+  cards now show how much was spent inside the current window in
+  USD, just under the percentage. Window start is derived from the
+  latest sample's resetsIn countdown (`resetsAt - 5h` / `resetsAt -
+  7d`) — sums the cost of every sample inside that range using the
+  bundled pricing table. Hidden if pricing is unavailable.
+- **Last-turn cost** below the "Last Turn (since previous fetch)"
+  card row — `this turn: $X.XX`. Walks back over stale carry-forward
+  rows to find the last sample with real token data, so a stale
+  refresh doesn't blank the number out.
+
+## [0.33.0] - 2026-05-03
+### Added
+- **"Enable VS Code skin support" toggle** in the limits chart options
+  (next to the gradient colour pickers and Reset button). Off by
+  default — chart panels keep the locked dark palette from v0.20. On
+  — chart background, borders and text follow the active VS Code
+  theme via `--vscode-*` tokens. The setting is single-source on
+  ChartSettings; the tokens panel and sidebar mini charts pick it up
+  automatically through the existing globalState/postMessage sync.
+- White day-boundary dashes and the SVG totals labels in the mini
+  tokens chart switched from hard-coded `#ffffff` / `#ddd` / `#999`
+  to `currentColor` so they remain visible when the skin override is
+  on (light theme: dark dashes on light bg).
+
+## [0.32.0] - 2026-05-03
+### Added
+- **Drag-to-select on the limits chart** (mirrors the tokens-chart
+  selection from 0.31.0). Drag a horizontal range over the chart and
+  a yellow-bordered panel below shows the sum of per-turn deltas
+  inside the selection — `5h: +Δ%`, `week: +Δ%` — plus turn count and
+  duration. Picking 3 turns of `+1%`, `+5%`, `+10%` gives `+16%`.
+- If the selection includes a window reset (negative delta), a
+  yellow-tinted note flags it so the user knows why the sum dipped.
+- Same UX as the tokens chart: click without dragging clears, `Esc`
+  clears, changing Day / focus / colours auto-clears.
+
+## [0.31.0] - 2026-05-03
+### Added
+- **Drag-to-select on the tokens chart.** Click+drag horizontally over
+  the bars to highlight a time range; the bars under the rectangle are
+  summed and a yellow-bordered panel below the chart shows the totals
+  — turn count, time span + duration, total tokens, total cost in USD,
+  and a per-segment breakdown (out / in / cache+ / cache-). Useful for
+  estimating the cost of "the last 15 turns I spent on feature X".
+- Click without dragging clears the selection. `Esc` does the same.
+  Selection is dropped automatically when Day, Y axis, or focus is
+  changed (the new window's units may not match).
+
 ## [0.30.0] - 2026-05-03
 ### Fixed
 - Tokens chart could throw `TypeError: undefined is not iterable` and

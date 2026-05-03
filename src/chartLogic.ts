@@ -8,6 +8,8 @@ export interface ChartSettings {
   fiveFade: string;
   weekSat: string;
   weekFade: string;
+  vscodeSkin: boolean;
+  showUsdSpent: boolean;
 }
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
@@ -20,6 +22,8 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   fiveFade: '#ffc2c2',
   weekSat: '#2499ff',
   weekFade: '#a8cfff',
+  vscodeSkin: false,
+  showUsdSpent: true,
 };
 
 export interface TokensChartSettings {

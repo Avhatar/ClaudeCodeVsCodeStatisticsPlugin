@@ -10,7 +10,12 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
-  /* Locked dark palette — see DEV-NOTES "Theme-independent visuals". */
+  /* Locked dark palette by default — chart visuals were tuned for a dark
+     backdrop. Toggle "Enable VS Code skin support" on the limits chart to
+     switch this panel (and the sidebar mini charts) to body.theme-vscode
+     overrides that follow the user's theme. Cost-tier colours stay fixed
+     because their meaning ("output is most expensive" → red) shouldn't
+     depend on the editor theme. */
   :root {
     --bg: #1e1e1e;
     --panel: #2a2a2a;
@@ -23,6 +28,15 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
     --c-in: #ff9c3c;
     --c-cc: #ffd23f;
     --c-cr: #3ddc97;
+  }
+  body.theme-vscode {
+    --bg: var(--vscode-editor-background, #1e1e1e);
+    --panel: var(--vscode-editorWidget-background, #2a2a2a);
+    --border: var(--vscode-widget-border, #3c3c3c);
+    --text: var(--vscode-foreground, #ddd);
+    --muted: var(--vscode-descriptionForeground, #999);
+    --grid: rgba(127,127,127,0.18);
+    --accent: var(--vscode-textLink-foreground, #4aa7f7);
   }
   body {
     font-family: var(--vscode-font-family);
@@ -86,7 +100,19 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
     border-radius: 1px; margin-right: 6px; vertical-align: middle;
   }
   .bar-rect { stroke: #1e1e1e; stroke-width: 0.5; }
-  .bar-rect:hover { stroke: rgba(255,255,255,0.6); stroke-width: 0.5; }
+  .bar-group.is-hover .bar-rect {
+    stroke: rgba(255, 255, 255, 0.85);
+    stroke-width: 1;
+  }
+  #chart { cursor: crosshair; }
+  .sel-info {
+    margin-top: 10px; padding: 10px 14px;
+    background: var(--panel); border: 1px solid #facc15;
+    border-radius: 5px; font-size: 12px; line-height: 1.6;
+  }
+  .sel-info b { color: var(--text); }
+  .sel-info .breakdown { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .sel-info .hint { color: var(--muted); font-size: 10px; margin-left: 12px; }
   .pricing-note {
     margin-top: 14px; padding: 10px 12px;
     background: var(--panel); border: 1px solid var(--border);
@@ -118,6 +144,7 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
 <div class="chart-wrap">
   <svg id="chart" viewBox="0 0 800 400" preserveAspectRatio="xMidYMid meet"></svg>
 </div>
+<div class="sel-info" id="selection" style="display:none"></div>
 <div class="below">
   <div class="row">
     <span class="ctl">Break on gap &gt; <input id="gap" type="number" min="0" step="1" value="8" /> h</span>
@@ -156,6 +183,16 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
   const gapInput = document.getElementById('gap');
   const yModeInput = document.getElementById('yMode');
   const focusInput = document.getElementById('focus');
+  const selInfo = document.getElementById('selection');
+
+  // Drag-to-select state. activeSelection holds an absolute time range so
+  // it stays meaningful across re-renders. currentVisible / currentScale
+  // are stamped at the end of every render() so the mouseup handler and
+  // updateSelInfo() can use them without reaching into closures.
+  let activeSelection = null; // { fromMs, toMs }
+  let currentVisible = [];
+  let currentScale = { fromMs: 0, toMs: 1 };
+  let dragState = null;       // { startX, rect }
 
   const vsApi = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
   const saved = vsApi ? (vsApi.getState() || {}) : {};
@@ -246,6 +283,131 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
     const cr  = (p.tokCacheRead   || 0) * price.cache_read     / 1_000_000;
     return { out, in_, cc, cr, total: out + in_ + cc + cr };
   }
+
+  function fmtSpan(fromMs, toMs) {
+    const a = new Date(fromMs), b = new Date(toMs);
+    const aDate = pad2(a.getMonth()+1) + '-' + pad2(a.getDate());
+    const bDate = pad2(b.getMonth()+1) + '-' + pad2(b.getDate());
+    const aTime = pad2(a.getHours()) + ':' + pad2(a.getMinutes());
+    const bTime = pad2(b.getHours()) + ':' + pad2(b.getMinutes());
+    if (aDate === bDate) return aDate + ' ' + aTime + '–' + bTime;
+    return aDate + ' ' + aTime + ' → ' + bDate + ' ' + bTime;
+  }
+  function fmtDur(ms) {
+    const sec = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (h > 24) return Math.floor(h / 24) + 'd' + (h % 24) + 'h';
+    if (h > 0)  return h + 'h' + (m ? m + 'm' : '');
+    return m + 'm';
+  }
+
+  // Recompute selection summary from currentVisible against activeSelection.
+  function updateSelInfo() {
+    if (!activeSelection) { selInfo.style.display = 'none'; return; }
+    const { fromMs, toMs } = activeSelection;
+    const inSel = currentVisible.filter(p => p.tsMs >= fromMs && p.tsMs <= toMs);
+    let totalIn = 0, totalOut = 0, totalCc = 0, totalCr = 0, totalUsd = 0;
+    let costAvailable = false;
+    for (const p of inSel) {
+      totalIn  += p.tokIn  || 0;
+      totalOut += p.tokOut || 0;
+      totalCc  += p.tokCacheCreate || 0;
+      totalCr  += p.tokCacheRead   || 0;
+      const c = costForTurn(p);
+      if (c) { totalUsd += c.total; costAvailable = true; }
+    }
+    const totalTok = totalIn + totalOut + totalCc + totalCr;
+    const span = fmtSpan(fromMs, toMs);
+    const dur = fmtDur(toMs - fromMs);
+    const tokPart  = '<b>' + fmtTok(totalTok) + '</b> tokens';
+    const costPart = costAvailable ? '  ·  <b>' + fmtUsd(totalUsd) + '</b>' : '';
+    selInfo.innerHTML =
+      '<div><b>Selection</b>  ·  ' + escapeHtml(String(inSel.length)) + ' turns  ·  ' +
+      escapeHtml(span) + '  (' + escapeHtml(dur) + ')</div>' +
+      '<div style="margin-top:4px">' + tokPart + costPart +
+      '<span class="hint">drag again to redo · click outside / Esc to clear</span></div>' +
+      '<div class="breakdown">out ' + fmtTok(totalOut) + ' / in ' + fmtTok(totalIn) +
+      ' / c+ ' + fmtTok(totalCc) + ' / c- ' + fmtTok(totalCr) + '</div>';
+    selInfo.style.display = 'block';
+  }
+
+  function clearSelection() {
+    activeSelection = null;
+    selInfo.style.display = 'none';
+  }
+
+  // Translate a clientX/clientY to viewBox coords. Handles preserveAspectRatio.
+  function svgPointFromEvent(e) {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    const inv = ctm.inverse();
+    const sp = pt.matrixTransform(inv);
+    return { x: sp.x, y: sp.y };
+  }
+  function clampX(x) {
+    return Math.max(PAD.left, Math.min(PAD.left + PW, x));
+  }
+  function timeFromX(x) {
+    const t = (x - PAD.left) / PW;
+    return currentScale.fromMs + t * (currentScale.toMs - currentScale.fromMs);
+  }
+
+  svg.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return; // only left-click
+    const sp = svgPointFromEvent(e);
+    if (!sp) return;
+    if (sp.x < PAD.left || sp.x > PAD.left + PW) return;
+    if (sp.y < PAD.top  || sp.y > PAD.top  + PH) return;
+    dragState = { startX: sp.x, rect: null };
+    try { svg.setPointerCapture(e.pointerId); } catch {}
+    hideTooltip();
+    e.preventDefault();
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (!dragState) return;
+    const sp = svgPointFromEvent(e);
+    if (!sp) return;
+    const x = clampX(sp.x);
+    if (!dragState.rect) {
+      dragState.rect = el('rect', {
+        y: PAD.top, height: PH,
+        fill: 'rgba(250, 204, 21, 0.10)',
+        stroke: '#facc15', 'stroke-width': '1', 'stroke-dasharray': '4 2',
+        'pointer-events': 'none',
+      });
+      svg.appendChild(dragState.rect);
+    }
+    const xL = Math.min(dragState.startX, x);
+    const xR = Math.max(dragState.startX, x);
+    dragState.rect.setAttribute('x', xL);
+    dragState.rect.setAttribute('width', String(xR - xL));
+  });
+  svg.addEventListener('pointerup', (e) => {
+    if (!dragState) return;
+    const sp = svgPointFromEvent(e);
+    const endX = sp ? clampX(sp.x) : dragState.startX;
+    const xL = Math.min(dragState.startX, endX);
+    const xR = Math.max(dragState.startX, endX);
+    if (dragState.rect) { dragState.rect.remove(); dragState.rect = null; }
+    dragState = null;
+    if (xR - xL < 3) {
+      // Treat as click — clear any selection.
+      clearSelection();
+      render();
+      return;
+    }
+    activeSelection = { fromMs: timeFromX(xL), toMs: timeFromX(xR) };
+    render();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeSelection) {
+      clearSelection();
+      render();
+    }
+  });
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
@@ -337,15 +499,33 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
     svg.appendChild(fo);
   }
 
+  function positionTooltip(pageX, pageY) {
+    // Default offset to the lower-right of the cursor; if the tooltip would
+    // run past the visible viewport on either axis, flip to the opposite
+    // side. offsetWidth/Height force a sync reflow which is what we want
+    // here — we need the measured size right now to compute the flip.
+    const margin = 8;
+    const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+    const right  = window.scrollX + window.innerWidth;
+    const bottom = window.scrollY + window.innerHeight;
+    let left = pageX + 12, top = pageY + 12;
+    if (left + w + margin > right)  left = Math.max(window.scrollX + margin, pageX - w - 12);
+    if (top  + h + margin > bottom) top  = Math.max(window.scrollY + margin, pageY - h - 12);
+    tooltip.style.left = left + 'px';
+    tooltip.style.top  = top  + 'px';
+  }
   function showTooltip(evt, html) {
+    if (dragState) return; // suppress while drag-selecting
     tooltip.innerHTML = html;
-    tooltip.style.left = (evt.pageX + 12) + 'px';
-    tooltip.style.top  = (evt.pageY + 12) + 'px';
     tooltip.style.opacity = '1';
+    positionTooltip(evt.pageX, evt.pageY);
   }
   function hideTooltip() { tooltip.style.opacity = '0'; }
 
   function render() {
+    // Theme follows the limits-chart's vscodeSkin setting (piggy-backed on
+    // ChartData since the tokens panel doesn't have its own toggle).
+    document.body.classList.toggle('theme-vscode', !!(data && data.vscodeSkin));
     clear();
     daysInput.classList.remove('invalid');
     const range = parseRange(daysInput.value);
@@ -391,6 +571,15 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
       fromMs = Math.max(fromMs, minTs - HOUR);
       toMs   = Math.min(toMs,   maxTs + HOUR);
       days   = (toMs - fromMs) / 86400000;
+    }
+
+    // Stash for the drag-selection handlers (which run outside render scope).
+    currentVisible = visible;
+    currentScale = { fromMs, toMs };
+    // Drop selection that no longer overlaps the visible window.
+    if (activeSelection &&
+        (activeSelection.toMs < fromMs || activeSelection.fromMs > toMs)) {
+      clearSelection();
     }
 
     // Per-turn segment values in the active Y mode. Tokens mode: raw counts.
@@ -505,7 +694,7 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
         const x = xOf(bMs);
         svg.appendChild(el('line', {
           x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
-          stroke: '#ffffff', 'stroke-width': '1', 'stroke-dasharray': '2 4', 'stroke-opacity': '0.3',
+          stroke: 'currentColor', 'stroke-width': '1', 'stroke-dasharray': '2 4', 'stroke-opacity': '0.3',
         }));
         bMs += DAY_MS;
       }
@@ -553,7 +742,14 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
     // Stacked bars in linear/USD modes; 4 side-by-side micro-bars in log mode
     // (stacking on a log axis looks visually misleading because the heights
     // aren't additive in log space).
+    // Tooltips are not bound to bar rects directly — at high turn density
+    // bars are 1 px wide and impossible to hit. Instead we draw bars with no
+    // pointer-events, then in a second pass put a transparent full-height
+    // "hit area" rect per turn covering the cell from the previous turn's
+    // midpoint to the next turn's midpoint (Voronoi-style).
     const yBase = PAD.top + PH;
+    const tips = new Array(visible.length);
+    const barGroups = new Array(visible.length);
     for (let i = 0; i < visible.length; i++) {
       const p = visible[i];
       const sv = segVals[i];
@@ -564,7 +760,7 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
       const modelLine = p.model
         ? '<div class="row" style="color:var(--muted);font-size:10px"><span>model</span><b>' + escapeHtml(p.model) + '</b></div>'
         : '';
-      const tip =
+      tips[i] =
         '<div class="row"><b>' + fmtTime(p.tsMs, 'both') + '</b></div>' +
         modelLine +
         '<div class="row"><span><span class="sw" style="background:' + COLORS.out + '"></span>output</span><b>' + fmtTok(p.tokOut) + (cost ? ' <span style="color:var(--muted)">' + fmtUsd(cost.out) + '</span>' : '') + '</b></div>' +
@@ -574,6 +770,10 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
         '<div class="row" style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px"><span>tokens</span><b>' + fmtTok(tokTotal) + '</b></div>' +
         (cost ? '<div class="row"><span>cost</span><b>' + fmtUsd(cost.total) + '</b></div>' : '');
 
+      // Group all rects of this turn so the hit-area can toggle a single
+      // class to highlight every segment at once via CSS.
+      const group = el('g', { class: 'bar-group' });
+      barGroups[i] = group;
       if (isLog) {
         function drawLogBar(v, color, slot) {
           if (!v || v <= 0) return;
@@ -584,10 +784,9 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
             x: cx - barW / 2 + slot * w,
             y: y, width: w, height: yBase - y,
             fill: color,
+            'pointer-events': 'none',
           });
-          r.addEventListener('mouseenter', e => showTooltip(e, tip));
-          r.addEventListener('mouseleave', hideTooltip);
-          svg.appendChild(r);
+          group.appendChild(r);
         }
         drawLogBar(sv.out, COLORS.out, 0);
         drawLogBar(sv.in_, COLORS.in,  1);
@@ -609,13 +808,64 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
             class: 'bar-rect',
             x: x0, y: y1, width: barW, height: y0 - y1,
             fill: color,
+            'pointer-events': 'none',
           });
-          r.addEventListener('mouseenter', e => showTooltip(e, tip));
-          r.addEventListener('mouseleave', hideTooltip);
-          svg.appendChild(r);
+          group.appendChild(r);
           cum += v;
         }
       }
+      svg.appendChild(group);
+    }
+
+    // Per-turn hit-area: x-extent from midpoint to previous turn to midpoint
+    // to next turn, but capped at MAX_HALF_PX on each side so a sparse chart
+    // doesn't make the hit zone span hours of empty space. Full plot height.
+    // pointer-events:all on a transparent fill so mouseenter still fires.
+    // pointerdown bubbles to the SVG so drag-to-select keeps working.
+    const MAX_HALF_PX = 20;
+    for (let i = 0; i < visible.length; i++) {
+      const cx = xOf(visible[i].tsMs);
+      const prevX = i > 0 ? xOf(visible[i - 1].tsMs) : null;
+      const nextX = i < visible.length - 1 ? xOf(visible[i + 1].tsMs) : null;
+      const halfL = prevX != null ? Math.min(MAX_HALF_PX, (cx - prevX) / 2) : MAX_HALF_PX;
+      const halfR = nextX != null ? Math.min(MAX_HALF_PX, (nextX - cx) / 2) : MAX_HALF_PX;
+      const hit = el('rect', {
+        x: cx - halfL, y: PAD.top, width: halfL + halfR, height: PH,
+        fill: 'transparent', 'pointer-events': 'all',
+      });
+      const tip = tips[i];
+      const group = barGroups[i];
+      hit.addEventListener('mouseenter', (e) => {
+        showTooltip(e, tip);
+        if (group) group.classList.add('is-hover');
+      });
+      hit.addEventListener('mouseleave', () => {
+        hideTooltip();
+        if (group) group.classList.remove('is-hover');
+      });
+      svg.appendChild(hit);
+    }
+
+    // Selection overlay: drawn last so it sits on top of the bars. Rect lives
+    // inside the chart plot area only; clamped to fromMs/toMs so a selection
+    // that partly fell outside the new window after a Day change still shows
+    // the part that's still in view.
+    if (activeSelection) {
+      const sFrom = Math.max(activeSelection.fromMs, fromMs);
+      const sTo   = Math.min(activeSelection.toMs,   toMs);
+      if (sTo > sFrom) {
+        const xL = xOf(sFrom);
+        const xR = xOf(sTo);
+        svg.appendChild(el('rect', {
+          x: xL, y: PAD.top, width: xR - xL, height: PH,
+          fill: 'rgba(250, 204, 21, 0.10)',
+          stroke: '#facc15', 'stroke-width': '1', 'stroke-dasharray': '4 2',
+          'pointer-events': 'none',
+        }));
+      }
+      updateSelInfo();
+    } else {
+      selInfo.style.display = 'none';
     }
   }
 
@@ -623,15 +873,14 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
   // so the sidebar mini tokens chart reflects them as soon as the panel opens.
   persist();
 
-  function onChange() { persist(); render(); }
+  function onChange() { clearSelection(); persist(); render(); }
   [daysInput, gapInput, yModeInput, focusInput].forEach(inp => {
     inp.addEventListener('input', onChange);
     inp.addEventListener('change', onChange);
   });
   document.addEventListener('mousemove', (e) => {
     if (tooltip.style.opacity === '1') {
-      tooltip.style.left = (e.pageX + 12) + 'px';
-      tooltip.style.top  = (e.pageY + 12) + 'px';
+      positionTooltip(e.pageX, e.pageY);
     }
   });
   window.addEventListener('message', (e) => {

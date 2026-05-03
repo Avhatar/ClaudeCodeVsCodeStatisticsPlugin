@@ -20,6 +20,7 @@ let currentSamples: ParsedSample[] = [];
 let hookOutdatedInfo: { installed: string | null; bundled: string } | null = null;
 let updatePromptShownThisSession = false;
 let pricingTable: PricingTable | null = null;
+let settingsOpen = false; // sidebar Settings dropdown — kept in extension memory so toggling an option doesn't collapse the section
 function getSettings(): ChartSettings {
   const saved = extensionContext?.globalState.get<ChartSettings>(CHART_SETTINGS_KEY);
   return saved ? { ...DEFAULT_CHART_SETTINGS, ...saved } : DEFAULT_CHART_SETTINGS;
@@ -27,6 +28,18 @@ function getSettings(): ChartSettings {
 function getTokensSettings(): TokensChartSettings {
   const saved = extensionContext?.globalState.get<TokensChartSettings>(TOKENS_SETTINGS_KEY);
   return saved ? { ...DEFAULT_TOKENS_CHART_SETTINGS, ...saved } : DEFAULT_TOKENS_CHART_SETTINGS;
+}
+
+function toggleSetting(key: 'showUsdSpent' | 'vscodeSkin') {
+  const next = { ...getSettings(), [key]: !getSettings()[key] };
+  extensionContext.globalState.update(CHART_SETTINGS_KEY, next);
+  log(`toggleSetting: ${key} -> ${next[key]}`);
+  // Sidebar re-render picks up the new flag via getSettings().
+  panelProvider.update(currentState);
+  // Push fresh ChartData (carrying vscodeSkin) to any open panel so they
+  // re-theme without needing user input on the panel itself.
+  if (chartPanel) pushChartData();
+  if (tokensPanel) pushTokensData();
 }
 
 let statusItem: vscode.StatusBarItem;
@@ -67,6 +80,9 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('claudeUsage.refresh', () => refresh()),
     vscode.commands.registerCommand('claudeUsage.showDailySummary', () => showDailySummary()),
+    vscode.commands.registerCommand('claudeUsage.toggleShowUsdSpent', () => toggleSetting('showUsdSpent')),
+    vscode.commands.registerCommand('claudeUsage.toggleVscodeSkin',  () => toggleSetting('vscodeSkin')),
+    vscode.commands.registerCommand('claudeUsage.toggleSettingsOpen', () => { settingsOpen = !settingsOpen; panelProvider.update(currentState); }),
     vscode.commands.registerCommand('claudeUsage.showChart', () => showChart()),
     vscode.commands.registerCommand('claudeUsage.showTokens', () => showTokens()),
     vscode.commands.registerCommand('claudeUsage.openLogFile', () => openLogFile()),
@@ -308,8 +324,8 @@ function refresh() {
   } else {
     currentState = {
       stats: {
-        fiveHour: { percent: sample.five, resetsIn: sample.fiveResetsIn, delta: sample.fiveDelta },
-        week: { percent: sample.week, resetsIn: sample.weekResetsIn, delta: sample.weekDelta },
+        fiveHour: { percent: sample.five, resetsIn: sample.fiveResetsIn, delta: sample.fiveDelta, windowReset: sample.fiveWindowReset },
+        week:     { percent: sample.week, resetsIn: sample.weekResetsIn, delta: sample.weekDelta, windowReset: sample.weekWindowReset },
         fetchedAt: sample.ts,
         stale: sample.stale,
       },
@@ -317,7 +333,7 @@ function refresh() {
       lastFetchAt: sample.ts,
       hookOutdated: hookOutdatedInfo,
     };
-    log(`refresh: 5h=${sample.five}% (Δ${sample.fiveDelta}) week=${sample.week}% (Δ${sample.weekDelta}) stale=${sample.stale} @ ${sample.ts}`);
+    log(`refresh: 5h=${sample.five}% (Δ${sample.fiveDelta}${sample.fiveWindowReset ? ' RESET' : ''}) week=${sample.week}% (Δ${sample.weekDelta}${sample.weekWindowReset ? ' RESET' : ''}) stale=${sample.stale} @ ${sample.ts}`);
   }
   panelProvider.update(currentState);
   updateStatusBar();
@@ -339,18 +355,20 @@ function updateStatusBar() {
     h.percent >= 80 || w.percent >= 80 ? '$(warning)' :
     h.percent >= 50 || w.percent >= 50 ? '$(pulse)' :
     '$(check)';
-  const fmtSeg = (pct: number, delta: number | null) => {
+  const fmtSeg = (pct: number, delta: number | null, windowReset: boolean) => {
     const main = `${pct.toFixed(0)}%`;
+    if (windowReset) return `${main} (reset)`;
     if (delta == null) return main;
     const sign = delta > 0 ? '+' : delta < 0 ? '' : '';
     return `${main} (${sign}${delta.toFixed(0)}%)`;
   };
-  statusItem.text = `${icon} ${fmtSeg(h.percent, h.delta)}, ${fmtSeg(w.percent, w.delta)}`;
+  statusItem.text = `${icon} ${fmtSeg(h.percent, h.delta, h.windowReset)}, ${fmtSeg(w.percent, w.delta, w.windowReset)}`;
   statusItem.tooltip = new vscode.MarkdownString(
     `**Claude Code usage**\n\n` +
-    `- 5-hour: **${h.percent.toFixed(2)}%**${h.resetsIn ? ' (resets in ' + h.resetsIn + ')' : ''}\n` +
-    `- Weekly: **${w.percent.toFixed(2)}%**${w.resetsIn ? ' (resets in ' + w.resetsIn + ')' : ''}\n` +
-    (h.delta != null ? `- Last turn: **${h.delta > 0 ? '+' : ''}${h.delta.toFixed(2)}%** of 5h\n` : '') +
+    `- 5-hour: **${h.percent.toFixed(2)}%**${h.resetsIn ? ' (resets in ' + h.resetsIn + ')' : ''}${h.windowReset ? ' · _window just reset_' : ''}\n` +
+    `- Weekly: **${w.percent.toFixed(2)}%**${w.resetsIn ? ' (resets in ' + w.resetsIn + ')' : ''}${w.windowReset ? ' · _window just reset_' : ''}\n` +
+    (h.windowReset ? `- Last turn: _5h window reset since previous fetch — delta hidden_\n`
+      : h.delta != null ? `- Last turn: **${h.delta > 0 ? '+' : ''}${h.delta.toFixed(2)}%** of 5h\n` : '') +
     `\nClick to refresh.`
   );
   statusItem.show();
@@ -370,7 +388,7 @@ class UsagePanelProvider implements vscode.WebviewViewProvider {
 
   private render() {
     if (!this.view) return;
-    this.view.webview.html = renderHtml(randomNonce(), currentState, currentSamples, getSettings(), getTokensSettings(), pricingTable);
+    this.view.webview.html = renderHtml(randomNonce(), currentState, currentSamples, getSettings(), getTokensSettings(), pricingTable, settingsOpen);
   }
 }
 
@@ -443,14 +461,14 @@ function showChart() {
   // true), so mutations to the SVG persist and are visible immediately
   // when the user returns to the tab.
   const entries = readAll(getLogPath());
-  const data = prepareChartData(entries, pricingTable);
+  const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   chartPanel.webview.html = renderChartHtml(randomNonce(), data);
 }
 
 function pushChartData() {
   if (!chartPanel) return;
   const entries = readAll(getLogPath());
-  const data = prepareChartData(entries, pricingTable);
+  const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   chartPanel.webview.postMessage({ type: 'data', data });
 }
 
@@ -479,13 +497,13 @@ function showTokens() {
     }
   });
   const entries = readAll(getLogPath());
-  const data = prepareChartData(entries, pricingTable);
+  const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   tokensPanel.webview.html = renderTokensHtml(randomNonce(), data);
 }
 
 function pushTokensData() {
   if (!tokensPanel) return;
   const entries = readAll(getLogPath());
-  const data = prepareChartData(entries, pricingTable);
+  const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   tokensPanel.webview.postMessage({ type: 'data', data });
 }

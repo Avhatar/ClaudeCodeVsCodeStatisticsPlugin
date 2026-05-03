@@ -16,20 +16,24 @@ export function renderHtml(
   settings: ChartSettings,
   tokensSettings: TokensChartSettings,
   pricing: PricingTable | null,
+  settingsOpen: boolean,
 ): string {
   const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
 
   let body: string;
   if (state.stats) {
-    body = renderStats(state.stats)
+    body = renderStats(state.stats, samples, pricing, settings)
       + renderMiniChart(samples, settings)
-      + renderTokensMiniChart(samples, tokensSettings, pricing);
+      + renderTokensMiniChart(samples, tokensSettings, pricing)
+      + renderSettings(settings, settingsOpen);
   } else if (state.error) {
     body = renderError(state.error);
   } else {
     body = renderLoading();
   }
   if (state.hookOutdated) body = renderUpdateBanner(state.hookOutdated) + body;
+
+  const bodyClass = settings.vscodeSkin ? 'theme-vscode' : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -159,6 +163,14 @@ export function renderHtml(
     cursor: pointer;
     transition: border-color 0.15s ease;
   }
+  /* Theme-vscode override (body class set by renderHtml from ChartSettings.vscodeSkin):
+     swap the mini-chart island's locked dark backdrop for theme tokens. */
+  body.theme-vscode .mini-svg,
+  body.theme-vscode .mini-empty {
+    background: var(--vscode-editorWidget-background, #2a2a2a);
+    border-color: var(--vscode-widget-border, #3c3c3c);
+  }
+  body.theme-vscode .mini-empty { color: var(--vscode-descriptionForeground, #999); }
   .turn-card .label {
     font-size: 10px;
     text-transform: uppercase;
@@ -178,6 +190,57 @@ export function renderHtml(
     color: var(--muted);
     margin-top: 3px;
   }
+  .turn-cost {
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+    margin: -10px 0 18px;
+  }
+  .turn-cost b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .spent {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .spent b { color: var(--text); }
+  .spent .hint { color: var(--muted); font-size: 10px; margin-left: 4px; }
+  .settings {
+    background: var(--bar-bg);
+    border: 1px solid var(--bar-border);
+    border-radius: 5px;
+    margin-top: 4px;
+    margin-bottom: 4px;
+    font-size: 11px;
+  }
+  a.settings-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 7px 10px;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    text-decoration: none;
+  }
+  a.settings-summary:hover { color: var(--text); }
+  a.settings-summary .caret { color: var(--muted); }
+  .settings .opts { padding: 0 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .settings a.opt {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 6px; border-radius: 3px;
+    color: var(--text); text-decoration: none;
+  }
+  .settings a.opt:hover { background: var(--bar-border); }
+  .settings a.opt .state {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .settings a.opt.on .state { color: var(--good); }
+  .settings a.opt.off .state { color: var(--muted); }
   .empty, .err {
     color: var(--muted);
     text-align: center;
@@ -229,7 +292,7 @@ export function renderHtml(
   .update-banner .ver { color: #999; font-family: var(--vscode-editor-font-family, monospace); }
 </style>
 </head>
-<body>
+<body class="${bodyClass}">
 ${body}
 </body>
 </html>`;
@@ -261,26 +324,115 @@ function renderError(err: { code: string; detail?: string }): string {
   </div>`;
 }
 
-function renderStats(s: UsageStats): string {
+function renderSettings(settings: ChartSettings, open: boolean): string {
+  // Native <details> resets to its initial open-state every time the host
+  // replaces innerHTML — so toggling any option would collapse the section.
+  // We track open-state in extension memory and reflect it via a CSS class.
+  const row = (label: string, on: boolean, command: string, hint?: string) => {
+    return `<a class="opt ${on ? 'on' : 'off'}" href="command:${command}" title="${escapeHtml(hint ?? '')}">
+      <span>${escapeHtml(label)}</span>
+      <span class="state">${on ? 'ON' : 'OFF'}</span>
+    </a>`;
+  };
+  return `
+    <div class="settings ${open ? 'is-open' : ''}">
+      <a class="settings-summary" href="command:claudeUsage.toggleSettingsOpen">
+        <span>Settings</span>
+        <span class="caret">${open ? '▴' : '▾'}</span>
+      </a>
+      ${open ? `<div class="opts">
+        ${row('Show USD spent', settings.showUsdSpent, 'claudeUsage.toggleShowUsdSpent', 'Display per-window and per-turn dollar amounts in this sidebar')}
+        ${row('VS Code skin support', settings.vscodeSkin, 'claudeUsage.toggleVscodeSkin', 'When ON, chart panels follow your VS Code theme colours; when OFF (default) they use a locked dark palette tuned for the chart visuals')}
+      </div>` : ''}
+    </div>
+  `;
+}
+
+function renderStats(s: UsageStats, samples: ParsedSample[], pricing: PricingTable | null, settings: ChartSettings): string {
   const ts = new Date(s.fetchedAt);
   const tsLocal = isNaN(ts.getTime()) ? s.fetchedAt : ts.toLocaleTimeString();
   const staleNote = s.stale ? ` <span style="color: var(--warn, #facc15)">· stale (API unavailable)</span>` : '';
+
+  // Per-turn cost = cost of the latest sample that has token data. Stale
+  // carry-forward samples have null tokens, so we walk back to the last real
+  // turn instead. costForSampleTotal returns null if pricing is missing.
+  let lastTurnCost: number | null = null;
+  for (let i = samples.length - 1; i >= 0; i--) {
+    if (samples[i].tokIn != null) {
+      lastTurnCost = costForSampleTotal(samples[i], pricing);
+      break;
+    }
+  }
+
+  // Total spent inside the current 5h / weekly window. Window start is derived
+  // from the latest sample's resetsIn countdown: resetsAt = sample.ts + parsed,
+  // windowStart = resetsAt - windowMs. If the countdown is missing or unparseable
+  // we just don't show the spent number.
+  const HOUR_MS = 3_600_000;
+  const fiveSpentRaw = computeWindowSpent(samples, s.fiveHour.resetsIn, ts.getTime(),  5 * HOUR_MS,   pricing);
+  const weekSpentRaw = computeWindowSpent(samples, s.week.resetsIn,    ts.getTime(), 168 * HOUR_MS,   pricing);
+  // Settings.showUsdSpent gates the visible cost lines; helpers are still
+  // computed so the cost mini-toggle in the settings dropdown takes effect
+  // immediately on next render without waiting for a fresh refresh.
+  const fiveSpent = settings.showUsdSpent ? fiveSpentRaw : null;
+  const weekSpent = settings.showUsdSpent ? weekSpentRaw : null;
+  const turnCost  = settings.showUsdSpent ? lastTurnCost  : null;
+
   return `
-    ${renderTurnCard(s)}
-    ${renderBar('5-Hour Limit', s.fiveHour.percent, s.fiveHour.delta, s.fiveHour.resetsIn)}
-    ${renderBar('Weekly Limit', s.week.percent, s.week.delta, s.week.resetsIn)}
+    ${renderTurnCard(s, turnCost)}
+    ${renderBar('5-Hour Limit', s.fiveHour.percent, s.fiveHour.delta, s.fiveHour.resetsIn, fiveSpent, s.fiveHour.windowReset)}
+    ${renderBar('Weekly Limit', s.week.percent,    s.week.delta,    s.week.resetsIn,    weekSpent, s.week.windowReset)}
     <div class="meta">
       <div>Last fetched: <b>${escapeHtml(tsLocal)}</b>${staleNote}</div>
     </div>
   `;
 }
 
-function renderTurnCard(s: UsageStats): string {
+function costForSampleTotal(p: ParsedSample, pricing: PricingTable | null): number | null {
+  if (!pricing) return null;
+  if (p.tokIn == null || p.tokOut == null || p.tokCacheCreate == null || p.tokCacheRead == null) return null;
+  const price = lookupModelPrice(pricing, p.model);
+  if (!price) return null;
+  return (p.tokOut || 0) * price.output         / 1_000_000 +
+         (p.tokIn  || 0) * price.input          / 1_000_000 +
+         (p.tokCacheCreate || 0) * price.cache_write_5m / 1_000_000 +
+         (p.tokCacheRead   || 0) * price.cache_read     / 1_000_000;
+}
+
+function computeWindowSpent(
+  samples: ParsedSample[],
+  resetsIn: string | null,
+  latestTsMs: number,
+  windowMs: number,
+  pricing: PricingTable | null,
+): number | null {
+  if (!pricing || !resetsIn) return null;
+  const remaining = parseDur(resetsIn);
+  if (remaining == null) return null;
+  const resetAtMs = latestTsMs + remaining;
+  const windowStartMs = resetAtMs - windowMs;
+  let total = 0;
+  let counted = 0;
+  for (const p of samples) {
+    const t = new Date(p.ts).getTime();
+    if (t < windowStartMs) continue;
+    const c = costForSampleTotal(p, pricing);
+    if (c != null) { total += c; counted++; }
+  }
+  return counted > 0 ? total : null;
+}
+
+function renderTurnCard(s: UsageStats, lastTurnCost: number | null): string {
   const d5 = s.fiveHour.delta;
   const dw = s.week.delta;
-  const hasDelta = d5 != null || dw != null;
+  const r5 = s.fiveHour.windowReset;
+  const rw = s.week.windowReset;
+  const hasSomething = d5 != null || dw != null || r5 || rw;
+  const costLine = lastTurnCost != null
+    ? `<div class="turn-cost">this turn: <b>${escapeHtml(fmtUsdShort(lastTurnCost))}</b></div>`
+    : '';
 
-  if (!hasDelta) {
+  if (!hasSomething) {
     return `
       <h2>Last Turn (since previous fetch)</h2>
       <div class="turn-row">
@@ -295,19 +447,30 @@ function renderTurnCard(s: UsageStats): string {
           <div class="sub">first sample</div>
         </div>
       </div>
+      ${costLine}
     `;
   }
 
   return `
     <h2>Last Turn (since previous fetch)</h2>
     <div class="turn-row">
-      ${turnCard('5h Δ', d5)}
-      ${turnCard('Week Δ', dw)}
+      ${turnCard('5h Δ', d5, r5)}
+      ${turnCard('Week Δ', dw, rw)}
     </div>
+    ${costLine}
   `;
 }
 
-function turnCard(label: string, delta: number | null): string {
+function turnCard(label: string, delta: number | null, windowReset: boolean): string {
+  if (windowReset) {
+    return `
+      <div class="turn-card" title="The underlying window reset between the previous fetch and this one — a numeric Δ would compare two different windows, so it is hidden.">
+        <div class="label">${escapeHtml(label)}</div>
+        <span class="pct" style="color: var(--muted); font-size: 14px;">window reset</span>
+        <div class="sub">new window</div>
+      </div>
+    `;
+  }
   if (delta == null) {
     return `
       <div class="turn-card">
@@ -328,11 +491,20 @@ function turnCard(label: string, delta: number | null): string {
   `;
 }
 
-function renderBar(label: string, percent: number, delta: number | null, resetsIn: string | null): string {
+function renderBar(label: string, percent: number, delta: number | null, resetsIn: string | null, spentUsd: number | null, windowReset: boolean): string {
   const color = percent >= 80 ? 'var(--bad)' : percent >= 50 ? 'var(--warn)' : 'var(--good)';
   const w = Math.min(100, Math.max(0, percent));
-  const deltaCls = delta == null ? '' : delta > 0.005 ? 'up' : delta < -0.005 ? 'down' : '';
-  const deltaTxt = delta == null ? '' : `Δ ${signed(delta)}% since last fetch`;
+  let deltaCls = '';
+  let deltaTxt = '';
+  if (windowReset) {
+    deltaTxt = 'new window — Δ vs previous fetch is across windows, hidden';
+  } else if (delta != null) {
+    deltaCls = delta > 0.005 ? 'up' : delta < -0.005 ? 'down' : '';
+    deltaTxt = `Δ ${signed(delta)}% since last fetch`;
+  }
+  const spentLine = spentUsd != null
+    ? `<div class="spent"><b>${escapeHtml(fmtUsdShort(spentUsd))}</b> <span class="hint">spent in this window</span></div>`
+    : '';
   return `
     <div class="card">
       <h2>${escapeHtml(label)}</h2>
@@ -340,6 +512,7 @@ function renderBar(label: string, percent: number, delta: number | null, resetsI
         <span class="pct">${percent.toFixed(percent % 1 === 0 ? 0 : 2)}%</span>
         <span class="reset">${resetsIn ? '↻ ' + escapeHtml(resetsIn) : ''}</span>
       </div>
+      ${spentLine}
       <div class="bar"><div class="fill" style="width: ${w}%; background: ${color};"></div></div>
       ${deltaTxt ? `<div class="delta ${deltaCls}">${deltaTxt}</div>` : ''}
     </div>
@@ -410,7 +583,7 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
     let bMs = sod.getTime() + DAY_MS;
     while (bMs < win.toMs) {
       const x = xOf(bMs).toFixed(1);
-      dayLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="#ffffff" stroke-width="0.5" stroke-dasharray="1 3" stroke-opacity="0.25"/>`;
+      dayLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="currentColor" stroke-width="0.5" stroke-dasharray="1 3" stroke-opacity="0.25"/>`;
       bMs += DAY_MS;
     }
   }
@@ -650,7 +823,7 @@ function renderTokensMiniChart(samples: ParsedSample[], s: TokensChartSettings, 
     let bMs = sod.getTime() + DAY_MS;
     while (bMs < toMs) {
       const x = xOf(bMs).toFixed(1);
-      dayLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="#ffffff" stroke-width="0.5" stroke-dasharray="1 3" stroke-opacity="0.25"/>`;
+      dayLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="currentColor" stroke-width="0.5" stroke-dasharray="1 3" stroke-opacity="0.25"/>`;
       bMs += DAY_MS;
     }
   }
@@ -700,8 +873,8 @@ function renderTokensMiniChart(samples: ParsedSample[], s: TokensChartSettings, 
         <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="mini-svg">
           ${dayLines}
           ${bars.join('')}
-          <text x="${W - 6}" y="14" text-anchor="end" font-size="10" font-family="var(--vscode-editor-font-family, monospace)" fill="#ddd">${escapeHtml(labelText)}</text>
-          <text x="${W - 6}" y="26" text-anchor="end" font-size="9" font-family="var(--vscode-editor-font-family, monospace)" fill="#999">${escapeHtml(modeLabel)}</text>
+          <text x="${W - 6}" y="14" text-anchor="end" font-size="10" font-family="var(--vscode-editor-font-family, monospace)" fill="currentColor">${escapeHtml(labelText)}</text>
+          <text x="${W - 6}" y="26" text-anchor="end" font-size="9" font-family="var(--vscode-editor-font-family, monospace)" fill="currentColor" opacity="0.6">${escapeHtml(modeLabel)}</text>
         </svg>
       </a>
     </div>

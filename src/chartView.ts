@@ -10,10 +10,13 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
-  /* Locked dark palette — chart visuals (white day-boundary dashes, low-alpha
-     white grid, gradient strokes) were tuned for a dark backdrop and become
-     unreadable on a light VS Code theme. We deliberately do NOT inherit
-     --vscode-* color tokens here; only fonts follow the user's settings. */
+  /* Locked dark palette by default — chart visuals (white day-boundary dashes,
+     low-alpha white grid, gradient strokes) were tuned for a dark backdrop and
+     can be unreadable on a light VS Code theme. The "Enable VS Code skin
+     support" toggle in the options below switches to body.theme-vscode which
+     overrides these vars with --vscode-* tokens; users opting in accept the
+     trade-off that some elements are still tuned for dark.
+     Fonts always follow the user's VS Code settings. */
   :root {
     --bg: #1e1e1e;
     --panel: #2a2a2a;
@@ -23,6 +26,14 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     --grid: rgba(255,255,255,0.06);
     --five: #f87171;
     --week: #4aa7f7;
+  }
+  body.theme-vscode {
+    --bg: var(--vscode-editor-background, #1e1e1e);
+    --panel: var(--vscode-editorWidget-background, #2a2a2a);
+    --border: var(--vscode-widget-border, #3c3c3c);
+    --text: var(--vscode-foreground, #ddd);
+    --muted: var(--vscode-descriptionForeground, #999);
+    --grid: rgba(127,127,127,0.18);
   }
   body {
     font-family: var(--vscode-font-family);
@@ -125,6 +136,11 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
   .axis text { fill: var(--muted); font-size: 10px; font-family: var(--vscode-editor-font-family, monospace); }
   .axis line.axis-line { stroke: var(--border); }
   .gridline { stroke: var(--grid); stroke-dasharray: 2,3; }
+  .point-group.is-hover circle {
+    stroke: var(--text);
+    stroke-width: 2;
+    r: 4.5;
+  }
   .tooltip {
     position: absolute;
     pointer-events: none;
@@ -140,6 +156,14 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     z-index: 10;
   }
   .tooltip b { color: var(--text); }
+  #chart { cursor: crosshair; }
+  .sel-info {
+    margin-top: 10px; padding: 10px 14px;
+    background: var(--panel); border: 1px solid #facc15;
+    border-radius: 5px; font-size: 12px; line-height: 1.6;
+  }
+  .sel-info b { color: var(--text); }
+  .sel-info .hint { color: var(--muted); font-size: 10px; margin-left: 12px; }
 </style>
 </head>
 <body>
@@ -157,6 +181,7 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
 <div class="chart-wrap">
   <svg id="chart" viewBox="0 0 800 400" preserveAspectRatio="xMidYMid meet"></svg>
 </div>
+<div class="sel-info" id="selection" style="display:none"></div>
 <div class="below">
   <div class="row">
     <span class="ctl">Break line on gap &gt; <input id="gap" type="number" min="0" step="1" value="8" /> h</span>
@@ -195,6 +220,16 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
   const breakOnResetInput = document.getElementById('breakOnReset');
   const forecastInput = document.getElementById('forecast');
   const focusInput = document.getElementById('focus');
+  const selInfo = document.getElementById('selection');
+
+  // Drag-to-select state. activeSelection is in absolute time so it stays
+  // valid across re-renders. currentVisible / currentScale are stamped
+  // at the end of every render() so the mouseup handler and updateSelInfo()
+  // can read them without reaching into the render closure.
+  let activeSelection = null; // { fromMs, toMs }
+  let currentVisible = [];
+  let currentScale = { fromMs: 0, toMs: 1 };
+  let dragState = null;       // { startX, rect }
 
   // Persist user's choices in webview state so they survive panel reloads.
   const vsApi = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
@@ -208,6 +243,13 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
   if (typeof saved.breakOnReset === 'boolean') breakOnResetInput.checked = saved.breakOnReset;
   if (typeof saved.forecast === 'boolean') forecastInput.checked = saved.forecast;
   if (typeof saved.focus === 'boolean') focusInput.checked = saved.focus;
+  // Theme follows ChartSettings.vscodeSkin, which the sidebar's Settings
+  // dropdown owns now. Each render re-applies the body class from data.vscodeSkin
+  // so a toggle in the sidebar is reflected here without a panel reload.
+  function applyTheme() {
+    document.body.classList.toggle('theme-vscode', !!(data && data.vscodeSkin));
+  }
+  applyTheme();
   function persist() {
     if (!vsApi) return;
     const settings = {
@@ -241,11 +283,22 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
   }
 
+  function positionTooltip(pageX, pageY) {
+    const margin = 8;
+    const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+    const right  = window.scrollX + window.innerWidth;
+    const bottom = window.scrollY + window.innerHeight;
+    let left = pageX + 12, top = pageY + 12;
+    if (left + w + margin > right)  left = Math.max(window.scrollX + margin, pageX - w - 12);
+    if (top  + h + margin > bottom) top  = Math.max(window.scrollY + margin, pageY - h - 12);
+    tooltip.style.left = left + 'px';
+    tooltip.style.top  = top  + 'px';
+  }
   function showTooltip(evt, html) {
+    if (dragState) return; // suppress while drag-selecting
     tooltip.innerHTML = html;
-    tooltip.style.left = (evt.pageX + 12) + 'px';
-    tooltip.style.top = (evt.pageY + 12) + 'px';
     tooltip.style.opacity = '1';
+    positionTooltip(evt.pageX, evt.pageY);
   }
   function hideTooltip() { tooltip.style.opacity = '0'; }
 
@@ -373,7 +426,143 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  function fmtSpan(fromMs, toMs) {
+    const a = new Date(fromMs), b = new Date(toMs);
+    const aDate = pad2(a.getMonth()+1) + '-' + pad2(a.getDate());
+    const bDate = pad2(b.getMonth()+1) + '-' + pad2(b.getDate());
+    const aTime = pad2(a.getHours()) + ':' + pad2(a.getMinutes());
+    const bTime = pad2(b.getHours()) + ':' + pad2(b.getMinutes());
+    if (aDate === bDate) return aDate + ' ' + aTime + '–' + bTime;
+    return aDate + ' ' + aTime + ' → ' + bDate + ' ' + bTime;
+  }
+  function fmtDur(ms) {
+    const sec = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (h > 24) return Math.floor(h / 24) + 'd' + (h % 24) + 'h';
+    if (h > 0)  return h + 'h' + (m ? m + 'm' : '');
+    return m + 'm';
+  }
+  function fmtSigned(n) {
+    if (n == null || !isFinite(n)) return '—';
+    if (Math.abs(n) < 0.005) return '+0%';
+    return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+  }
+
+  // Recompute selection summary from currentVisible against activeSelection.
+  // Sums the per-turn deltas (5h, week) over the selected range — so picking
+  // 3 turns of +1%, +5%, +10% gives "+16%". Resets show up as negative deltas
+  // and still contribute to the signed sum; the meta line tags them so the
+  // user knows why a number went down.
+  function updateSelInfo() {
+    if (!activeSelection) { selInfo.style.display = 'none'; return; }
+    const { fromMs, toMs } = activeSelection;
+    const inSel = currentVisible.filter(p => p.tsMs >= fromMs && p.tsMs <= toMs);
+    let sum5 = 0, sumW = 0, hasResetIn = false, hasResetWk = false;
+    let n5 = 0, nw = 0;
+    for (const p of inSel) {
+      if (typeof p.fiveDelta === 'number' && isFinite(p.fiveDelta)) {
+        sum5 += p.fiveDelta; n5++;
+        if (p.fiveDelta < -0.005) hasResetIn = true;
+      }
+      if (typeof p.weekDelta === 'number' && isFinite(p.weekDelta)) {
+        sumW += p.weekDelta; nw++;
+        if (p.weekDelta < -0.005) hasResetWk = true;
+      }
+    }
+    const span = fmtSpan(fromMs, toMs);
+    const dur = fmtDur(toMs - fromMs);
+    const resetNote = (hasResetIn || hasResetWk)
+      ? ' <span class="hint" style="color:#facc15">includes a window reset — negative delta is real</span>'
+      : '';
+    selInfo.innerHTML =
+      '<div><b>Selection</b>  ·  ' + escapeHtml(String(inSel.length)) + ' turns  ·  ' +
+      escapeHtml(span) + '  (' + escapeHtml(dur) + ')</div>' +
+      '<div style="margin-top:4px">' +
+      '<span style="margin-right:18px">5h: <b>' + fmtSigned(sum5) + '</b>' +
+      (n5 < inSel.length ? ' <span class="hint">(' + n5 + '/' + inSel.length + ' had a delta)</span>' : '') +
+      '</span>' +
+      '<span>week: <b>' + fmtSigned(sumW) + '</b>' +
+      (nw < inSel.length ? ' <span class="hint">(' + nw + '/' + inSel.length + ' had a delta)</span>' : '') +
+      '</span>' +
+      resetNote +
+      '<span class="hint">drag again to redo · click outside / Esc to clear</span>' +
+      '</div>';
+    selInfo.style.display = 'block';
+  }
+
+  function clearSelection() {
+    activeSelection = null;
+    selInfo.style.display = 'none';
+  }
+
+  function svgPointFromEvent(e) {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    const sp = pt.matrixTransform(ctm.inverse());
+    return { x: sp.x, y: sp.y };
+  }
+  function clampX(x) { return Math.max(PAD.left, Math.min(PAD.left + PW, x)); }
+  function timeFromX(x) {
+    const t = (x - PAD.left) / PW;
+    return currentScale.fromMs + t * (currentScale.toMs - currentScale.fromMs);
+  }
+
+  svg.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const sp = svgPointFromEvent(e); if (!sp) return;
+    if (sp.x < PAD.left || sp.x > PAD.left + PW) return;
+    if (sp.y < PAD.top  || sp.y > PAD.top  + PH) return;
+    dragState = { startX: sp.x, rect: null };
+    try { svg.setPointerCapture(e.pointerId); } catch {}
+    hideTooltip();
+    e.preventDefault();
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (!dragState) return;
+    const sp = svgPointFromEvent(e); if (!sp) return;
+    const x = clampX(sp.x);
+    if (!dragState.rect) {
+      dragState.rect = el('rect', {
+        y: PAD.top, height: PH,
+        fill: 'rgba(250, 204, 21, 0.10)',
+        stroke: '#facc15', 'stroke-width': '1', 'stroke-dasharray': '4 2',
+        'pointer-events': 'none',
+      });
+      svg.appendChild(dragState.rect);
+    }
+    const xL = Math.min(dragState.startX, x);
+    const xR = Math.max(dragState.startX, x);
+    dragState.rect.setAttribute('x', xL);
+    dragState.rect.setAttribute('width', String(xR - xL));
+  });
+  svg.addEventListener('pointerup', (e) => {
+    if (!dragState) return;
+    const sp = svgPointFromEvent(e);
+    const endX = sp ? clampX(sp.x) : dragState.startX;
+    const xL = Math.min(dragState.startX, endX);
+    const xR = Math.max(dragState.startX, endX);
+    if (dragState.rect) { dragState.rect.remove(); dragState.rect = null; }
+    dragState = null;
+    if (xR - xL < 3) {
+      clearSelection();
+      render();
+      return;
+    }
+    activeSelection = { fromMs: timeFromX(xL), toMs: timeFromX(xR) };
+    render();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeSelection) {
+      clearSelection();
+      render();
+    }
+  });
+
   function render() {
+    applyTheme();
     clear();
     daysInput.classList.remove('invalid');
     const range = parseRange(daysInput.value);
@@ -400,6 +589,14 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
       fromMs = Math.max(fromMs, minTs - HOUR);
       toMs = Math.min(toMs, maxTs + HOUR);
       days = (toMs - fromMs) / 86400000; // float days for tick density
+    }
+
+    // Stash for the drag-selection handlers (which run outside render scope).
+    currentVisible = visible;
+    currentScale = { fromMs, toMs };
+    if (activeSelection &&
+        (activeSelection.toMs < fromMs || activeSelection.fromMs > toMs)) {
+      clearSelection();
     }
 
     const focusNote = focusInput.checked && visible.length > 0 ? '  ·  focused' : '';
@@ -476,7 +673,7 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
         const x = xOf(bMs);
         svg.appendChild(el('line', {
           x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
-          stroke: '#ffffff', 'stroke-width': '1', 'stroke-dasharray': '2 4', 'stroke-opacity': '0.3',
+          stroke: 'currentColor', 'stroke-width': '1', 'stroke-dasharray': '2 4', 'stroke-opacity': '0.3',
         }));
         bMs += DAY_MS;
       }
@@ -560,27 +757,61 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
       }
       svg.appendChild(el('path', { d: segs.join(' '), fill: 'none', stroke: color, 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
     }
-    function pointsFor(getY, color, label) {
-      for (const p of visible) {
-        const x = xOf(p.tsMs);
-        const y = yOf(getY(p));
-        const c = el('circle', { cx: x, cy: y, r: 3, fill: color, stroke: 'var(--bg)', 'stroke-width': '1' });
-        const tFmt = fmtDateTime(p.tsMs, days <= 1 ? 'time' : 'both');
-        c.addEventListener('mouseenter', (e) => {
-          showTooltip(e, '<b>' + tFmt + '</b><br>5h: <b>' + p.five.toFixed(1) + '%</b>' +
-            (p.fiveDelta != null ? ' (' + (p.fiveDelta > 0 ? '+' : '') + p.fiveDelta.toFixed(1) + ')' : '') +
-            '<br>week: <b>' + p.week.toFixed(1) + '%</b>' +
-            (p.weekDelta != null ? ' (' + (p.weekDelta > 0 ? '+' : '') + p.weekDelta.toFixed(1) + ')' : ''));
-        });
-        c.addEventListener('mouseleave', hideTooltip);
-        svg.appendChild(c);
-      }
-    }
-
     lineFor(p => p.week, 'url(#weekGrad)');
     lineFor(p => p.five, 'url(#fiveGrad)');
-    pointsFor(p => p.week, 'url(#weekGrad)', 'week');
-    pointsFor(p => p.five, 'url(#fiveGrad)', '5h');
+
+    // Two circles per turn (week + 5h) inside one <g class="point-group">,
+    // so hover on the hit-area can highlight both at once via a single
+    // CSS class. pointer-events:none on each circle delegates hover entirely
+    // to the hit-area added below.
+    const pointGroups = new Array(visible.length);
+    for (let i = 0; i < visible.length; i++) {
+      const p = visible[i];
+      const x = xOf(p.tsMs);
+      const g = el('g', { class: 'point-group' });
+      g.appendChild(el('circle', {
+        cx: x, cy: yOf(p.week), r: 3, fill: 'url(#weekGrad)',
+        stroke: 'var(--bg)', 'stroke-width': '1', 'pointer-events': 'none',
+      }));
+      g.appendChild(el('circle', {
+        cx: x, cy: yOf(p.five), r: 3, fill: 'url(#fiveGrad)',
+        stroke: 'var(--bg)', 'stroke-width': '1', 'pointer-events': 'none',
+      }));
+      svg.appendChild(g);
+      pointGroups[i] = g;
+    }
+
+    // Per-turn hit-area, capped at MAX_HALF_PX each side so sparse data
+    // doesn't make the hover zone span hours of empty time. One tooltip per
+    // turn with both 5h and week info.
+    const MAX_HALF_PX = 20;
+    for (let i = 0; i < visible.length; i++) {
+      const p = visible[i];
+      const cx = xOf(p.tsMs);
+      const prevX = i > 0 ? xOf(visible[i - 1].tsMs) : null;
+      const nextX = i < visible.length - 1 ? xOf(visible[i + 1].tsMs) : null;
+      const halfL = prevX != null ? Math.min(MAX_HALF_PX, (cx - prevX) / 2) : MAX_HALF_PX;
+      const halfR = nextX != null ? Math.min(MAX_HALF_PX, (nextX - cx) / 2) : MAX_HALF_PX;
+      const tFmt = fmtDateTime(p.tsMs, days <= 1 ? 'time' : 'both');
+      const tip = '<b>' + tFmt + '</b><br>5h: <b>' + p.five.toFixed(1) + '%</b>' +
+        (p.fiveDelta != null ? ' (' + (p.fiveDelta > 0 ? '+' : '') + p.fiveDelta.toFixed(1) + ')' : '') +
+        '<br>week: <b>' + p.week.toFixed(1) + '%</b>' +
+        (p.weekDelta != null ? ' (' + (p.weekDelta > 0 ? '+' : '') + p.weekDelta.toFixed(1) + ')' : '');
+      const hit = el('rect', {
+        x: cx - halfL, y: PAD.top, width: halfL + halfR, height: PH,
+        fill: 'transparent', 'pointer-events': 'all',
+      });
+      const group = pointGroups[i];
+      hit.addEventListener('mouseenter', (e) => {
+        showTooltip(e, tip);
+        if (group) group.classList.add('is-hover');
+      });
+      hit.addEventListener('mouseleave', () => {
+        hideTooltip();
+        if (group) group.classList.remove('is-hover');
+      });
+      svg.appendChild(hit);
+    }
 
     if (forecastInput.checked && visible.length >= 2) {
       function drawForecast(getY, color) {
@@ -608,13 +839,31 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
       drawForecast(p => p.week, 'url(#weekGrad)');
       drawForecast(p => p.five, 'url(#fiveGrad)');
     }
+
+    if (activeSelection) {
+      const sFrom = Math.max(activeSelection.fromMs, fromMs);
+      const sTo   = Math.min(activeSelection.toMs,   toMs);
+      if (sTo > sFrom) {
+        const xL = xOf(sFrom);
+        const xR = xOf(sTo);
+        svg.appendChild(el('rect', {
+          x: xL, y: PAD.top, width: xR - xL, height: PH,
+          fill: 'rgba(250, 204, 21, 0.10)',
+          stroke: '#facc15', 'stroke-width': '1', 'stroke-dasharray': '4 2',
+          'pointer-events': 'none',
+        }));
+      }
+      updateSelInfo();
+    } else {
+      selInfo.style.display = 'none';
+    }
   }
 
   // Initial sync: send the (loaded or default) settings to extension so the
   // sidebar mini chart reflects them immediately.
   persist();
 
-  function onChange() { persist(); render(); }
+  function onChange() { clearSelection(); persist(); render(); }
   [daysInput, gapInput, fiveSatInput, fiveFadeInput, weekSatInput, weekFadeInput, breakOnResetInput, forecastInput, focusInput].forEach(inp => {
     inp.addEventListener('input', onChange);
     inp.addEventListener('change', onChange);
@@ -627,8 +876,7 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
   });
   document.addEventListener('mousemove', (e) => {
     if (tooltip.style.opacity === '1') {
-      tooltip.style.left = (e.pageX + 12) + 'px';
-      tooltip.style.top = (e.pageY + 12) + 'px';
+      positionTooltip(e.pageX, e.pageY);
     }
   });
 
