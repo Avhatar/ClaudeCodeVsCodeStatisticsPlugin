@@ -1,8 +1,8 @@
 {
-  "name": "claude-usage-monitor",
+  "name": "claude-code-telemetry",
   "displayName": "Claude Code Telemetry",
   "description": "Open-source dashboard for Claude Code: limits, predicted resets, tokens, USD spend, and usage forecasts.",
-  "version": "0.47.0",
+  "version": "0.49.0",
   "publisher": "Avhatar",
   "license": "MIT",
   "icon": "media/icon.png",

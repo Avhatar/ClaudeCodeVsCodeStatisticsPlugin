@@ -1,8 +1,10 @@
 import { ChartData } from './chart';
+import { ChartSettings } from './chartLogic';
 
-export function renderChartHtml(nonce: string, data: ChartData): string {
+export function renderChartHtml(nonce: string, data: ChartData, settings: ChartSettings): string {
   const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
   const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
+  const settingsJson = JSON.stringify(settings).replace(/</g, '\\u003c');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -231,8 +233,25 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
   let currentScale = { fromMs: 0, toMs: 1 };
   let dragState = null;       // { startX, rect }
 
-  // Persist user's choices in webview state so they survive panel reloads.
+  // Two persistence layers, applied in order so the strongest wins:
+  //   1. globalState — survives panel close/reopen and extension restart.
+  //      Baked into HTML by the extension; we apply it first.
+  //   2. webview setState — per-panel only (gone after panel close), but
+  //      still useful as the immediate-write target during a session.
+  // The HTML "value" attributes keep the *factory* defaults so the
+  // "Reset colors" button (which reads getAttribute('value')) restores
+  // the original palette rather than whatever the user last saved.
   const vsApi = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
+  const initial = ${settingsJson};
+  daysInput.value = initial.days;
+  gapInput.value = String(initial.gap);
+  fiveSatInput.value = initial.fiveSat;
+  fiveFadeInput.value = initial.fiveFade;
+  weekSatInput.value = initial.weekSat;
+  weekFadeInput.value = initial.weekFade;
+  breakOnResetInput.checked = !!initial.breakOnReset;
+  forecastInput.checked = !!initial.forecast;
+  focusInput.checked = !!initial.focus;
   const saved = vsApi ? (vsApi.getState() || {}) : {};
   if (saved.days)     daysInput.value = saved.days;
   if (saved.gap)      gapInput.value = saved.gap;
@@ -864,9 +883,10 @@ export function renderChartHtml(nonce: string, data: ChartData): string {
     }
   }
 
-  // Initial sync: send the (loaded or default) settings to extension so the
-  // sidebar mini chart reflects them immediately.
-  persist();
+  // No initial persist() — would clobber globalState with HTML defaults on
+  // every fresh panel open (the new webview's setState is empty), wiping
+  // the user's saved settings. Defaults are seeded into HTML by the
+  // extension instead, and persist() now only fires on user edits.
 
   function onChange() { clearSelection(); persist(); render(); }
   [daysInput, gapInput, fiveSatInput, fiveFadeInput, weekSatInput, weekFadeInput, breakOnResetInput, forecastInput, focusInput].forEach(inp => {

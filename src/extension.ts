@@ -497,7 +497,7 @@ function showChart() {
   // when the user returns to the tab.
   const entries = readAll(getLogPath());
   const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
-  chartPanel.webview.html = renderChartHtml(randomNonce(), data);
+  chartPanel.webview.html = renderChartHtml(randomNonce(), data, getSettings());
 }
 
 function pushChartData() {
@@ -533,7 +533,7 @@ function showTokens() {
   });
   const entries = readAll(getLogPath());
   const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
-  tokensPanel.webview.html = renderTokensHtml(randomNonce(), data);
+  tokensPanel.webview.html = renderTokensHtml(randomNonce(), data, getTokensSettings());
 }
 
 function pushTokensData() {

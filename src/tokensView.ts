@@ -1,8 +1,10 @@
 import { ChartData } from './chart';
+import { TokensChartSettings } from './chartLogic';
 
-export function renderTokensHtml(nonce: string, data: ChartData): string {
+export function renderTokensHtml(nonce: string, data: ChartData, settings: TokensChartSettings): string {
   const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
   const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
+  const settingsJson = JSON.stringify(settings).replace(/</g, '\\u003c');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -194,7 +196,15 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
   let currentScale = { fromMs: 0, toMs: 1 };
   let dragState = null;       // { startX, rect }
 
+  // globalState (baked in by the extension) is the durable layer — it
+  // survives panel close/reopen. Per-panel setState applies on top so
+  // edits during the same panel session take effect immediately.
   const vsApi = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
+  const initial = ${settingsJson};
+  daysInput.value = initial.days;
+  gapInput.value = String(initial.gap);
+  yModeInput.value = initial.yMode;
+  focusInput.checked = !!initial.focus;
   const saved = vsApi ? (vsApi.getState() || {}) : {};
   if (saved.days) daysInput.value = saved.days;
   if (saved.gap)  gapInput.value = saved.gap;
@@ -869,9 +879,9 @@ export function renderTokensHtml(nonce: string, data: ChartData): string {
     }
   }
 
-  // Initial sync: push current (defaulted-or-saved) settings to the extension
-  // so the sidebar mini tokens chart reflects them as soon as the panel opens.
-  persist();
+  // No initial persist() — defaults come from globalState via the baked-in
+  // initial object, and persisting on a fresh panel would overwrite saved
+  // settings with HTML defaults whenever setState was empty.
 
   function onChange() { clearSelection(); persist(); render(); }
   [daysInput, gapInput, yModeInput, focusInput].forEach(inp => {

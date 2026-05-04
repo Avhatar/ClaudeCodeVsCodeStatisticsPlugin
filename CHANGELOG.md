@@ -5,6 +5,14 @@ User-visible changes only. For root causes, design decisions and internal mechan
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0] - 2026-05-04
+### Fixed
+- Chart and tokens-chart settings (Day, Gap, gradients, Forecast, Focus, Y-axis, etc.) no longer reset to defaults when reopening the panel.
+
+## [0.48.0] - 2026-05-03
+### Changed
+- Marketplace package id renamed from `claude-usage-monitor` to `claude-code-telemetry` (the old id was already taken on the Marketplace and was blocking publish). User-facing settings, commands and saved state are unaffected.
+
 ## [0.47.0] - 2026-05-03
 ### Changed
 - License switched from Apache 2.0 to **MIT**. Same permissive spirit, fewer formalities, more recognisable.
