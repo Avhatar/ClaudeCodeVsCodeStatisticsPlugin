@@ -392,18 +392,23 @@ function updateStatusBar() {
     '$(check)';
   const fmtSeg = (pct: number, delta: number | null, windowReset: boolean) => {
     const main = `${pct.toFixed(0)}%`;
-    if (windowReset) return `${main} (reset)`;
-    if (delta == null) return main;
+    if (delta == null) return windowReset ? `${main} (reset)` : main;
     const sign = delta > 0 ? '+' : delta < 0 ? '' : '';
-    return `${main} (${sign}${delta.toFixed(0)}%)`;
+    const inner = `${sign}${delta.toFixed(0)}%${windowReset ? ' new' : ''}`;
+    return `${main} (${inner})`;
   };
   statusItem.text = `${icon} ${fmtSeg(h.percent, h.delta, h.windowReset)}, ${fmtSeg(w.percent, w.delta, w.windowReset)}`;
+  const turnLine = (label: string, delta: number | null, reset: boolean) => {
+    if (delta == null) return reset ? `- ${label}: _window just reset — delta hidden_\n` : '';
+    const sign = delta > 0 ? '+' : '';
+    const tag = reset ? ' _(in new window after reset)_' : '';
+    return `- ${label}: **${sign}${delta.toFixed(2)}%**${tag}\n`;
+  };
   statusItem.tooltip = new vscode.MarkdownString(
     `**Claude Code usage**\n\n` +
     `- 5-hour: **${h.percent.toFixed(2)}%**${h.resetsIn ? ' (resets in ' + h.resetsIn + ')' : ''}${h.windowReset ? ' · _window just reset_' : ''}\n` +
     `- Weekly: **${w.percent.toFixed(2)}%**${w.resetsIn ? ' (resets in ' + w.resetsIn + ')' : ''}${w.windowReset ? ' · _window just reset_' : ''}\n` +
-    (h.windowReset ? `- Last turn: _5h window reset since previous fetch — delta hidden_\n`
-      : h.delta != null ? `- Last turn: **${h.delta > 0 ? '+' : ''}${h.delta.toFixed(2)}%** of 5h\n` : '') +
+    turnLine('Last turn (5h)', h.delta, h.windowReset) +
     `\nClick to refresh.`
   );
   statusItem.show();

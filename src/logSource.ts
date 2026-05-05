@@ -139,8 +139,11 @@ export function readAll(filePath: string): ParsedSample[] {
   // measured one window, the curr sample measures a fresh one. We detect such
   // a reset via the `↻` countdown — it can only decrease as time passes, so a
   // significant increase between consecutive samples means the window flipped.
-  // When detected, null out the delta and mark the window-reset flag so the UI
-  // can show "window reset" instead of a misleading "+56%".
+  // When a reset is detected we set the windowReset flag AND assign delta =
+  // cur.value: the new window started at 0% at reset time, hooks fire once per
+  // turn, so the first sample after reset reflects exactly one turn's spend in
+  // the new window. The UI flags it as "new window" so users see both the spend
+  // number and the reset indicator instead of a hidden "across windows" delta.
   const RESET_EPSILON_MS = 60_000;
   for (let i = 1; i < filtered.length; i++) {
     const prev = filtered[i - 1];
@@ -149,7 +152,7 @@ export function readAll(filePath: string): ParsedSample[] {
     const fiveCurMs = parseDur(cur.fiveResetsIn);
     if (fivePrevMs != null && fiveCurMs != null && fiveCurMs > fivePrevMs + RESET_EPSILON_MS) {
       cur.fiveWindowReset = true;
-      cur.fiveDelta = null;
+      cur.fiveDelta = round2(cur.five);
     } else if (cur.fiveDelta == null) {
       cur.fiveDelta = round2(cur.five - prev.five);
     }
@@ -157,7 +160,7 @@ export function readAll(filePath: string): ParsedSample[] {
     const weekCurMs = parseDur(cur.weekResetsIn);
     if (weekPrevMs != null && weekCurMs != null && weekCurMs > weekPrevMs + RESET_EPSILON_MS) {
       cur.weekWindowReset = true;
-      cur.weekDelta = null;
+      cur.weekDelta = round2(cur.week);
     } else if (cur.weekDelta == null) {
       cur.weekDelta = round2(cur.week - prev.week);
     }

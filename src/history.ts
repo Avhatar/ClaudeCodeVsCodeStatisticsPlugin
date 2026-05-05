@@ -50,14 +50,17 @@ export function summarizeByDay(entries: HistoryEntry[]): DailySummary[] {
     if (e.five > s.peakFive) s.peakFive = e.five;
     if (e.week > s.peakWeek) s.peakWeek = e.week;
     if (e.fiveWindowReset) {
-      // Parser nulled out the across-window delta; count the reset explicitly.
+      // Count the reset, AND the post-reset delta (= spend of the first turn
+      // in the fresh window, which the parser writes as cur.percent).
       s.fiveHourResets += 1;
+      if (e.fiveDelta != null && e.fiveDelta > 0) s.fiveHourSpent += e.fiveDelta;
     } else if (e.fiveDelta != null) {
       if (e.fiveDelta > 0) s.fiveHourSpent += e.fiveDelta;
       else if (e.fiveDelta <= RESET_THRESHOLD) s.fiveHourResets += 1;
     }
     if (e.weekWindowReset) {
       s.weekResets += 1;
+      if (e.weekDelta != null && e.weekDelta > 0) s.weekSpent += e.weekDelta;
     } else if (e.weekDelta != null) {
       if (e.weekDelta > 0) s.weekSpent += e.weekDelta;
       else if (e.weekDelta <= RESET_THRESHOLD) s.weekResets += 1;

@@ -473,16 +473,16 @@ function renderTurnCard(s: UsageStats, lastTurnCost: number | null): string {
 }
 
 function turnCard(label: string, delta: number | null, windowReset: boolean): string {
-  if (windowReset) {
-    return `
-      <div class="turn-card" title="The underlying window reset between the previous fetch and this one — a numeric Δ would compare two different windows, so it is hidden.">
-        <div class="label">${escapeHtml(label)}</div>
-        <span class="pct" style="color: var(--muted); font-size: 14px;">window reset</span>
-        <div class="sub">new window</div>
-      </div>
-    `;
-  }
   if (delta == null) {
+    if (windowReset) {
+      return `
+        <div class="turn-card" title="The window reset between the previous fetch and this one.">
+          <div class="label">${escapeHtml(label)}</div>
+          <span class="pct" style="color: var(--muted); font-size: 14px;">window reset</span>
+          <div class="sub">new window</div>
+        </div>
+      `;
+    }
     return `
       <div class="turn-card">
         <div class="label">${escapeHtml(label)}</div>
@@ -491,10 +491,14 @@ function turnCard(label: string, delta: number | null, windowReset: boolean): st
       </div>
     `;
   }
+  // After a window reset the delta represents the spend of this single first
+  // turn in the fresh window (= cur.percent). Show it like a normal positive
+  // delta but tag the subtitle so the reset is still visible.
   const color = delta > 0.005 ? 'var(--bad)' : delta < -0.005 ? 'var(--good)' : 'var(--muted)';
-  const sub = delta > 0.005 ? 'consumed' : delta < -0.005 ? 'window reset' : 'no change';
+  const sub = windowReset ? 'new window' : delta > 0.005 ? 'consumed' : delta < -0.005 ? 'window reset' : 'no change';
+  const title = windowReset ? 'The window reset between the previous fetch and this one. The number shown is this turn\'s spend in the fresh window.' : '';
   return `
-    <div class="turn-card">
+    <div class="turn-card"${title ? ` title="${escapeHtml(title)}"` : ''}>
       <div class="label">${escapeHtml(label)}</div>
       <span class="pct" style="color: ${color}">${signed(delta)}%</span>
       <div class="sub">${sub}</div>
@@ -507,11 +511,13 @@ function renderBar(label: string, percent: number, delta: number | null, resetsI
   const w = Math.min(100, Math.max(0, percent));
   let deltaCls = '';
   let deltaTxt = '';
-  if (windowReset) {
-    deltaTxt = 'new window — Δ vs previous fetch is across windows, hidden';
-  } else if (delta != null) {
+  if (delta != null) {
     deltaCls = delta > 0.005 ? 'up' : delta < -0.005 ? 'down' : '';
-    deltaTxt = `Δ ${signed(delta)}% since last fetch`;
+    deltaTxt = windowReset
+      ? `Δ ${signed(delta)}% in new window (after reset)`
+      : `Δ ${signed(delta)}% since last fetch`;
+  } else if (windowReset) {
+    deltaTxt = 'new window — Δ hidden';
   }
   const spentLine = spentUsd != null
     ? `<div class="spent"><b>${escapeHtml(fmtUsdShort(spentUsd))}</b> <span class="hint">spent in this window</span></div>`
@@ -644,13 +650,16 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
     }
   }
 
-  // Forecast (linear extrapolation)
+  // Forecast (linear extrapolation). Non-stale samples only — stale rows
+  // carry the previous valid % verbatim, so they would flatten dy toward
+  // zero and silence the forecast on long stretches of API rate-limits.
+  const fcVisible = visible.filter(p => !p.stale);
   let forecastPath = '';
-  if (s.forecast && visible.length >= 2) {
+  if (s.forecast && fcVisible.length >= 2) {
     function fcLine(getY: (p: ParsedSample) => number, color: string): string {
-      const N = Math.min(5, visible.length);
-      const last = visible[visible.length - 1];
-      const first = visible[visible.length - N];
+      const N = Math.min(5, fcVisible.length);
+      const last = fcVisible[fcVisible.length - 1];
+      const first = fcVisible[fcVisible.length - N];
       const dt = last.tsMs - first.tsMs;
       const dy = getY(last) - getY(first);
       const yLast = getY(last);

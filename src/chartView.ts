@@ -494,7 +494,7 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
     const span = fmtSpan(fromMs, toMs);
     const dur = fmtDur(toMs - fromMs);
     const resetNote = (hasResetIn || hasResetWk)
-      ? ' <span class="hint" style="color:#facc15">includes a window reset — negative delta is real</span>'
+      ? ' <span class="hint" style="color:#facc15">includes a window reset — Δ counts the new-window starting spend</span>'
       : '';
     selInfo.innerHTML =
       '<div><b>Selection</b>  ·  ' + escapeHtml(String(inSel.length)) + ' turns  ·  ' +
@@ -837,11 +837,15 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
       svg.appendChild(hit);
     }
 
-    if (forecastInput.checked && visible.length >= 2) {
+    // Forecast uses non-stale samples only — stale rows carry the previous
+    // valid % verbatim (parser fallback on API failure), so including them
+    // flattens dy toward zero and the slope stops reflecting real usage.
+    const fcVisible = visible.filter(p => !p.stale);
+    if (forecastInput.checked && fcVisible.length >= 2) {
       function drawForecast(getY, color) {
-        const N = Math.min(5, visible.length);
-        const last = visible[visible.length - 1];
-        const first = visible[visible.length - N];
+        const N = Math.min(5, fcVisible.length);
+        const last = fcVisible[fcVisible.length - 1];
+        const first = fcVisible[fcVisible.length - N];
         const yLast = getY(last);
         const yFirst = getY(first);
         const dt = last.tsMs - first.tsMs;

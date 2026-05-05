@@ -5,6 +5,14 @@ User-visible changes only. For root causes, design decisions and internal mechan
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0] - 2026-05-05
+### Fixed
+- The first turn after a 5h or weekly window reset now shows its spend in the sidebar Last Turn card, the limit-bar delta line, and the status bar. Previously the delta was hidden as "window reset / new window" with no number, even though the chart drew it. The daily summary now includes that turn's spend in the day's total too.
+
+## [0.50.0] - 2026-05-04
+### Fixed
+- Forecast now ignores stale samples (those carrying forward the previous % after an API rate-limit), so the trend line draws based on real measurements instead of going silent on long flat plateaus.
+
 ## [0.49.0] - 2026-05-04
 ### Fixed
 - Chart and tokens-chart settings (Day, Gap, gradients, Forecast, Focus, Y-axis, etc.) no longer reset to defaults when reopening the panel.
