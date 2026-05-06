@@ -30,14 +30,20 @@ function getTokensSettings(): TokensChartSettings {
   return saved ? { ...DEFAULT_TOKENS_CHART_SETTINGS, ...saved } : DEFAULT_TOKENS_CHART_SETTINGS;
 }
 
-function toggleSetting(key: 'showUsdSpent' | 'vscodeSkin') {
+function toggleSetting(key: 'showUsdSpent' | 'vscodeSkin' | 'ignoreBuggedApiData') {
   const next = { ...getSettings(), [key]: !getSettings()[key] };
   extensionContext.globalState.update(CHART_SETTINGS_KEY, next);
   log(`toggleSetting: ${key} -> ${next[key]}`);
-  // Sidebar re-render picks up the new flag via getSettings().
-  panelProvider.update(currentState);
-  // Push fresh ChartData (carrying vscodeSkin) to any open panel so they
-  // re-theme without needing user input on the panel itself.
+  // ignoreBuggedApiData affects how the parser interprets the log, so the
+  // currentSamples cache and dependent views need a full refresh.
+  if (key === 'ignoreBuggedApiData') {
+    refresh();
+  } else {
+    panelProvider.update(currentState);
+  }
+  // Push fresh ChartData (carrying vscodeSkin / ignoreBuggedApiData) to any
+  // open panel so they re-theme / re-filter without needing user input on
+  // the panel itself.
   if (chartPanel) pushChartData();
   if (tokensPanel) pushTokensData();
 }
@@ -58,6 +64,12 @@ function log(msg: string) {
 function getLogPath(): string {
   const cfg = vscode.workspace.getConfiguration('claudeUsage').get<string>('logPath');
   return cfg && cfg.trim() ? cfg : DEFAULT_LOG_PATH;
+}
+
+function getReadOpts() {
+  return {
+    ignoreBuggedApiData: getSettings().ignoreBuggedApiData,
+  };
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -82,6 +94,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('claudeUsage.showDailySummary', () => showDailySummary()),
     vscode.commands.registerCommand('claudeUsage.toggleShowUsdSpent', () => toggleSetting('showUsdSpent')),
     vscode.commands.registerCommand('claudeUsage.toggleVscodeSkin',  () => toggleSetting('vscodeSkin')),
+    vscode.commands.registerCommand('claudeUsage.toggleIgnoreBuggedApiData', () => toggleSetting('ignoreBuggedApiData')),
     vscode.commands.registerCommand('claudeUsage.toggleSettingsOpen', () => { settingsOpen = !settingsOpen; panelProvider.update(currentState); }),
     vscode.commands.registerCommand('claudeUsage.showChart', () => showChart()),
     vscode.commands.registerCommand('claudeUsage.showTokens', () => showTokens()),
@@ -159,6 +172,11 @@ async function doUpdateHook() {
         : 'Claude Usage: hook already up to date.'
     );
     computeHookOutdated(extensionContext);
+    // currentState.hookOutdated is a snapshot from the last refresh() — sync
+    // it now so the sidebar banner disappears on this re-render instead of
+    // lingering until the next log-driven refresh. Without this, users see the
+    // banner stay put after clicking "Update hook" and click again repeatedly.
+    currentState = { ...currentState, hookOutdated: hookOutdatedInfo };
     panelProvider.update(currentState);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -344,7 +362,7 @@ function refresh() {
     updateStatusBar();
     return;
   }
-  currentSamples = readAll(p);
+  currentSamples = readAll(p, getReadOpts());
   const sample = currentSamples.length > 0 ? currentSamples[currentSamples.length - 1] : null;
   if (!sample) {
     currentState = {
@@ -440,7 +458,7 @@ function randomNonce(): string {
 }
 
 async function showDailySummary() {
-  const entries = readAll(getLogPath());
+  const entries = readAll(getLogPath(), getReadOpts());
   const md = renderDailySummaryMarkdownFromEntries(entries, getLogPath());
   const doc = await vscode.workspace.openTextDocument({ content: md, language: 'markdown' });
   await vscode.window.showTextDocument(doc, { preview: false });
@@ -500,14 +518,14 @@ function showChart() {
   // keeps running even when the tab is hidden (retainContextWhenHidden:
   // true), so mutations to the SVG persist and are visible immediately
   // when the user returns to the tab.
-  const entries = readAll(getLogPath());
+  const entries = readAll(getLogPath(), getReadOpts());
   const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   chartPanel.webview.html = renderChartHtml(randomNonce(), data, getSettings());
 }
 
 function pushChartData() {
   if (!chartPanel) return;
-  const entries = readAll(getLogPath());
+  const entries = readAll(getLogPath(), getReadOpts());
   const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   chartPanel.webview.postMessage({ type: 'data', data });
 }
@@ -536,14 +554,14 @@ function showTokens() {
       pushTokensData();
     }
   });
-  const entries = readAll(getLogPath());
+  const entries = readAll(getLogPath(), getReadOpts());
   const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   tokensPanel.webview.html = renderTokensHtml(randomNonce(), data, getTokensSettings());
 }
 
 function pushTokensData() {
   if (!tokensPanel) return;
-  const entries = readAll(getLogPath());
+  const entries = readAll(getLogPath(), getReadOpts());
   const data = prepareChartData(entries, pricingTable, getSettings().vscodeSkin);
   tokensPanel.webview.postMessage({ type: 'data', data });
 }

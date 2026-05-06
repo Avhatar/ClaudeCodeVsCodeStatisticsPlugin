@@ -10,11 +10,12 @@ export interface ChartSettings {
   weekFade: string;
   vscodeSkin: boolean;
   showUsdSpent: boolean;
+  ignoreBuggedApiData: boolean;
 }
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   days: '1',
-  gap: 8,
+  gap: 2,
   breakOnReset: true,
   forecast: false,
   focus: false,
@@ -24,6 +25,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   weekFade: '#a8cfff',
   vscodeSkin: false,
   showUsdSpent: true,
+  ignoreBuggedApiData: true,
 };
 
 export interface TokensChartSettings {

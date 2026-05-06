@@ -354,6 +354,7 @@ function renderSettings(settings: ChartSettings, open: boolean): string {
       ${open ? `<div class="opts">
         ${row('Show USD spent', settings.showUsdSpent, 'claudeUsage.toggleShowUsdSpent', 'Display per-window and per-turn dollar amounts in this sidebar')}
         ${row('VS Code skin support', settings.vscodeSkin, 'claudeUsage.toggleVscodeSkin', 'When ON, chart panels follow your VS Code theme colours; when OFF (default) they use a locked dark palette tuned for the chart visuals')}
+        ${row('Ignore bugged API data', settings.ignoreBuggedApiData, 'claudeUsage.toggleIgnoreBuggedApiData', "Anthropic's rate-limit endpoint occasionally returns clearly impossible values (e.g. week 100% mid-window after a string of 0% readings, with no countdown reset). When ON (default), each window's reading is compared against the previous one — if it jumps by more than 50 percentage points without a countdown reset, that window is treated as a failed readout and the previous valid value is shown instead. The other window, the per-turn token counts, and the model are unaffected. Suppressed points show in magenta on the chart with an explanatory tooltip. The raw log file is left untouched so forensics stay accurate. Turn this OFF to see exactly what the API returned, even when obviously wrong.")}
       </div>` : ''}
     </div>
   `;
@@ -576,7 +577,21 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
   const weekMid = midColor(s.weekSat, s.weekFade);
   const gapMs = s.gap * 60 * 60 * 1000;
 
-  function pathFor(getY: (p: ParsedSample) => number, getReset: (p: ParsedSample) => boolean): string {
+  // Tolerance for "different reset moment" comparison. The API returns
+  // resets_at with microsecond precision and the sub-second part jitters
+  // sample-to-sample even within the same window — strict string compare
+  // would falsely fire a reset on every sample.
+  const RESET_ISO_TOLERANCE_MS = 60_000;
+  const isoMs = (iso: string | null): number | null => {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    return isFinite(t) ? t : null;
+  };
+
+  function pathFor(
+    getY: (p: ParsedSample) => number,
+    getResetIso: (p: ParsedSample) => string | null,
+  ): string {
     const segs: string[] = [];
     for (let i = 0; i < visible.length; i++) {
       const p = visible[i];
@@ -584,14 +599,25 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
       const y = yOf(getY(p)).toFixed(1);
       const prev = visible[i - 1];
       const tooFar = prev && gapMs > 0 && (p.tsMs - prev.tsMs) > gapMs;
-      // breakOnReset triggers on either (a) the value dropped below prev — the
-      // legacy heuristic that catches "100% -> 0% after a window flip" — or
-      // (b) the parser flagged this sample as a window reset (catches the
-      // inverse case where the new window starts ABOVE prev's value, e.g. a
-      // 44% -> 100% spike at window flip — the user's 2026-05-03 incident).
-      const dropped = prev && s.breakOnReset && (getY(p) < getY(prev) || getReset(p));
-      const breakHere = i === 0 || tooFar || dropped;
-      segs.push((breakHere ? 'M' : 'L') + x + ' ' + y);
+      const prevMs = prev ? isoMs(getResetIso(prev)) : null;
+      const curMs = isoMs(getResetIso(p));
+      const knownReset = !!(prev && prevMs != null && curMs != null && Math.abs(prevMs - curMs) > RESET_ISO_TOLERANCE_MS);
+      if (knownReset && !tooFar) {
+        // Old window's line ends at prev. New segment starts a synthetic zero-
+        // crossing at exact reset moment (= prev.resets_at_iso) with break-
+        // OnReset on, or directly at the post-reset sample with it off.
+        if (s.breakOnReset) {
+          const rX = xOf(prevMs!).toFixed(1);
+          const rY = yOf(0).toFixed(1);
+          segs.push('M' + rX + ' ' + rY);
+          segs.push('L' + x + ' ' + y);
+        } else {
+          segs.push('M' + x + ' ' + y);
+        }
+      } else {
+        const breakHere = i === 0 || tooFar;
+        segs.push((breakHere ? 'M' : 'L') + x + ' ' + y);
+      }
     }
     return segs.join(' ');
   }
@@ -610,18 +636,23 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
     }
   }
 
-  // Reset markers (actual + predicted). Trigger on either the legacy
-  // "value dropped" heuristic OR the parser-set windowReset flag, which
-  // also catches resets where the new window's first sample reads HIGHER
-  // than the old window's last reading.
+  // Reset markers: drawn ONLY when consecutive samples' resets_at_iso parsed
+  // timestamps differ by more than the tolerance (microsecond jitter from the
+  // API is filtered out). Old entries without ISO get no marker.
   let resetLines = '';
   for (let i = 1; i < visible.length; i++) {
-    const cur = visible[i], prev = visible[i - 1];
-    const x = xOf(cur.tsMs).toFixed(1);
-    if (cur.five < prev.five || cur.fiveWindowReset) {
+    const cur = visible[i];
+    const prev = visible[i - 1];
+    const fivePrev = isoMs(prev.fiveResetsAtIso);
+    const fiveCur = isoMs(cur.fiveResetsAtIso);
+    if (fivePrev != null && fiveCur != null && Math.abs(fivePrev - fiveCur) > RESET_ISO_TOLERANCE_MS) {
+      const x = xOf(fivePrev).toFixed(1);
       resetLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="${fiveMid}" stroke-width="0.7" stroke-dasharray="2 2" stroke-opacity="0.6"/>`;
     }
-    if (cur.week < prev.week || cur.weekWindowReset) {
+    const weekPrev = isoMs(prev.weekResetsAtIso);
+    const weekCur = isoMs(cur.weekResetsAtIso);
+    if (weekPrev != null && weekCur != null && Math.abs(weekPrev - weekCur) > RESET_ISO_TOLERANCE_MS) {
+      const x = xOf(weekPrev).toFixed(1);
       resetLines += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + PH}" stroke="${weekMid}" stroke-width="0.7" stroke-dasharray="2 2" stroke-opacity="0.6"/>`;
     }
   }
@@ -650,29 +681,45 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
     }
   }
 
-  // Forecast (linear extrapolation). Non-stale samples only — stale rows
-  // carry the previous valid % verbatim, so they would flatten dy toward
-  // zero and silence the forecast on long stretches of API rate-limits.
-  const fcVisible = visible.filter(p => !p.stale);
+  // Forecast (linear extrapolation). Per-window filter: skip stale samples
+  // (no API data, carry-forward) and bugged samples for *that* window
+  // (impossible API reading, carry-forward). Either kind would flatten dy
+  // toward zero and silence the forecast on long stretches.
+  const fcVisibleFive = visible.filter(p => !p.stale && !p.fiveBugged);
+  const fcVisibleWeek = visible.filter(p => !p.stale && !p.weekBugged);
   let forecastPath = '';
-  if (s.forecast && fcVisible.length >= 2) {
-    function fcLine(getY: (p: ParsedSample) => number, color: string): string {
-      const N = Math.min(5, fcVisible.length);
-      const last = fcVisible[fcVisible.length - 1];
-      const first = fcVisible[fcVisible.length - N];
+  if (s.forecast) {
+    function fcLine(fc: typeof visible, getY: (p: ParsedSample) => number, color: string): string {
+      if (fc.length < 2) return '';
+      const N = Math.min(5, fc.length);
+      const last = fc[fc.length - 1];
+      const first = fc[fc.length - N];
       const dt = last.tsMs - first.tsMs;
       const dy = getY(last) - getY(first);
       const yLast = getY(last);
-      if (dt <= 0 || dy <= 0 || yLast >= 100) return '';
-      const slope = dy / dt;
-      const t100 = last.tsMs + (100 - yLast) / slope;
-      const xEnd = Math.min(t100, win.toMs);
-      if (xEnd <= last.tsMs) return '';
-      const yEnd = Math.min(100, yLast + slope * (xEnd - last.tsMs));
-      return `<line x1="${xOf(last.tsMs).toFixed(1)}" y1="${yOf(yLast).toFixed(1)}" x2="${xOf(xEnd).toFixed(1)}" y2="${yOf(yEnd).toFixed(1)}" stroke="${color}" stroke-width="1" stroke-dasharray="3 2" stroke-opacity="0.7"/>`;
+      if (dt <= 0 || yLast >= 100) return '';
+      let xEnd: number, yEnd: number, isFlat: boolean;
+      if (dy <= 0) {
+        // Flat / no trend — draw horizontal at current level so the user sees
+        // forecast is alive but has nothing to extrapolate. Mini chart has no
+        // room for a text label, so we just lean on a tighter dash pattern.
+        isFlat = true;
+        xEnd = win.toMs;
+        yEnd = yLast;
+      } else {
+        isFlat = false;
+        const slope = dy / dt;
+        const t100 = last.tsMs + (100 - yLast) / slope;
+        xEnd = Math.min(t100, win.toMs);
+        if (xEnd <= last.tsMs) return '';
+        yEnd = Math.min(100, yLast + slope * (xEnd - last.tsMs));
+      }
+      const dash = isFlat ? '1 3' : '3 2';
+      const opacity = isFlat ? '0.5' : '0.7';
+      return `<line x1="${xOf(last.tsMs).toFixed(1)}" y1="${yOf(yLast).toFixed(1)}" x2="${xOf(xEnd).toFixed(1)}" y2="${yOf(yEnd).toFixed(1)}" stroke="${color}" stroke-width="1" stroke-dasharray="${dash}" stroke-opacity="${opacity}"/>`;
     }
-    forecastPath += fcLine(p => p.week, 'url(#miniWeek)');
-    forecastPath += fcLine(p => p.five, 'url(#miniFive)');
+    forecastPath += fcLine(fcVisibleWeek, p => p.week, 'url(#miniWeek)');
+    forecastPath += fcLine(fcVisibleFive, p => p.five, 'url(#miniFive)');
   }
 
   const gridStops = [25, 50, 75]
@@ -697,8 +744,8 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
           ${gridStops}
           ${dayLines}
           ${resetLines}
-          <path d="${pathFor(p => p.week, p => p.weekWindowReset)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="${pathFor(p => p.five, p => p.fiveWindowReset)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="${pathFor(p => p.week, p => p.weekResetsAtIso)}" fill="none" stroke="url(#miniWeek)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="${pathFor(p => p.five, p => p.fiveResetsAtIso)}" fill="none" stroke="url(#miniFive)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
           ${forecastPath}
         </svg>
       </a>

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// claude-usage-monitor-hook v=0.45.0
+// claude-usage-monitor-hook v=0.46.0
 // Stop hook for Claude Code, installed by the "Claude Usage Monitor" VSCode
 // extension. On each Stop event:
 //   1. Reads transcript_path from stdin and walks the JSONL backwards to
@@ -23,7 +23,7 @@
 // **No silent try/catch** anywhere — every failure has a labelled
 // invokeLog() call so post-mortem diagnosis works.
 
-const HOOK_VERSION = '0.45.0';
+const HOOK_VERSION = '0.46.0';
 
 const fs = require('fs');
 const path = require('path');
@@ -477,14 +477,16 @@ function buildLogLine(last, _total, sessionTotal, turns, limits, delta, limitsEr
             const c = colorForPct(limits.five);
             const d = delta && delta.five != null ? ` ${ANSI.gray}(${fmtDelta(delta.five)})${ANSI.reset}` : '';
             const r = fmtUntil(limits.fiveResetsAt);
-            const rs = r ? ` ${ANSI.gray}↻${r}${ANSI.reset}` : '';
+            // Append the API's exact `resets_at` ISO so the parser can compute
+            // past reset moments without any heuristic. Format: `↻4h53m@<iso>`.
+            const rs = r ? ` ${ANSI.gray}↻${r}@${limits.fiveResetsAt}${ANSI.reset}` : '';
             segs.push(`${ANSI.cyan}5h${ANSI.reset} ${c}${limits.five.toFixed(0)}%${ANSI.reset}${d}${rs}`);
         }
         if (limits.week != null) {
             const c = colorForPct(limits.week);
             const d = delta && delta.week != null ? ` ${ANSI.gray}(${fmtDelta(delta.week)})${ANSI.reset}` : '';
             const r = fmtUntil(limits.weekResetsAt);
-            const rs = r ? ` ${ANSI.gray}↻${r}${ANSI.reset}` : '';
+            const rs = r ? ` ${ANSI.gray}↻${r}@${limits.weekResetsAt}${ANSI.reset}` : '';
             segs.push(`${ANSI.cyan}week${ANSI.reset} ${c}${limits.week.toFixed(0)}%${ANSI.reset}${d}${rs}`);
         }
     } else {

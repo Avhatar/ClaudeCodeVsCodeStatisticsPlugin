@@ -186,7 +186,7 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
 <div class="sel-info" id="selection" style="display:none"></div>
 <div class="below">
   <div class="row">
-    <span class="ctl">Break line on gap &gt; <input id="gap" type="number" min="0" step="1" value="8" /> h</span>
+    <span class="ctl">Break line on gap &gt; <input id="gap" type="number" min="0" step="1" value="2" /> h</span>
     <label class="ctl"><input id="breakOnReset" type="checkbox" checked /> Break on reset limit</label>
     <label class="ctl"><input id="forecast" type="checkbox" /> Forecast</label>
     <label class="ctl"><input id="focus" type="checkbox" /> Focus on data</label>
@@ -700,30 +700,6 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
       }
     }
 
-    // Reset markers: vertical dashed lines where the underlying window flipped.
-    // Two triggers: legacy "value dropped" (covers e.g. 80% -> 0% when new
-    // window starts low) and the parser-set windowReset flag (covers e.g.
-    // 44% -> 100% when the new window's first reading exceeds the old).
-    for (let i = 1; i < visible.length; i++) {
-      const cur = visible[i], prev = visible[i - 1];
-      const x = xOf(cur.tsMs);
-      if (cur.five < prev.five || cur.fiveWindowReset) {
-        svg.appendChild(el('line', {
-          x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
-          stroke: fiveMid, 'stroke-width': '1', 'stroke-dasharray': '4 4', 'stroke-opacity': '0.65',
-        }));
-      }
-      if (cur.week < prev.week || cur.weekWindowReset) {
-        svg.appendChild(el('line', {
-          x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
-          stroke: weekMid, 'stroke-width': '1', 'stroke-dasharray': '4 4', 'stroke-opacity': '0.65',
-        }));
-      }
-    }
-
-    // Predicted reset markers: ts of next reset = sample.tsMs + parsed countdown.
-    // Use the latest non-stale sample so the resetsIn string isn't an old copy
-    // carried forward by parser fallback.
     function parseDur(str) {
       if (!str || str === 'now') return null;
       const re = /(\\d+)([dhm])/g;
@@ -737,6 +713,48 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
       }
       return matched ? total : null;
     }
+    function isoMs(iso) {
+      if (!iso) return null;
+      const t = new Date(iso).getTime();
+      return isFinite(t) ? t : null;
+    }
+    // Tolerance for "different reset moment" comparison. The API returns
+    // resets_at with microsecond precision and the sub-second part jitters
+    // sample-to-sample even within the same window — strict string compare
+    // would falsely fire a reset on every sample.
+    const RESET_ISO_TOLERANCE_MS = 60_000;
+    // Reset markers: vertical dashed lines drawn ONLY when we have exact reset
+    // info from the API — i.e. when consecutive samples report different
+    // fiveResetsAtIso / weekResetsAtIso. The reset moment IS the prev sample's
+    // resets_at_iso (the reset we just crossed). For old log entries without
+    // the ISO field, no marker is drawn — we never approximate from countdown
+    // jumps anymore. Heuristic-free.
+    for (let i = 1; i < visible.length; i++) {
+      const cur = visible[i];
+      const prev = visible[i - 1];
+      const fivePrevMs = isoMs(prev.fiveResetsAtIso);
+      const fiveCurMs = isoMs(cur.fiveResetsAtIso);
+      if (fivePrevMs != null && fiveCurMs != null && Math.abs(fivePrevMs - fiveCurMs) > RESET_ISO_TOLERANCE_MS) {
+        const x = xOf(fivePrevMs);
+        svg.appendChild(el('line', {
+          x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
+          stroke: fiveMid, 'stroke-width': '1', 'stroke-dasharray': '4 4', 'stroke-opacity': '0.65',
+        }));
+      }
+      const weekPrevIsoMs = isoMs(prev.weekResetsAtIso);
+      const weekCurIsoMs = isoMs(cur.weekResetsAtIso);
+      if (weekPrevIsoMs != null && weekCurIsoMs != null && Math.abs(weekPrevIsoMs - weekCurIsoMs) > RESET_ISO_TOLERANCE_MS) {
+        const x = xOf(weekPrevIsoMs);
+        svg.appendChild(el('line', {
+          x1: x, y1: PAD.top, x2: x, y2: PAD.top + PH,
+          stroke: weekMid, 'stroke-width': '1', 'stroke-dasharray': '4 4', 'stroke-opacity': '0.65',
+        }));
+      }
+    }
+
+    // Predicted reset markers: ts of next reset = sample.tsMs + parsed countdown.
+    // Use the latest non-stale sample so the resetsIn string isn't an old copy
+    // carried forward by parser fallback.
     let lastValid = null;
     for (let i = data.samples.length - 1; i >= 0; i--) {
       if (!data.samples[i].stale) { lastValid = data.samples[i]; break; }
@@ -767,22 +785,49 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
     }
 
     const breakOnReset = breakOnResetInput.checked;
-    function lineFor(getY, getReset, color) {
+    function lineFor(getY, getResetIso, color) {
       const segs = [];
       for (let i = 0; i < visible.length; i++) {
         const p = visible[i];
         const x = xOf(p.tsMs).toFixed(1);
         const y = yOf(getY(p)).toFixed(1);
         const prev = visible[i - 1];
+        // Line breaks driven by the user-configurable "Break line on gap" setting
+        // (default 2h). Old log entries without resets_at ISO rely on this for
+        // visual separation across unknown resets — set to 0 to disable.
         const tooFar = prev && gapMs > 0 && (p.tsMs - prev.tsMs) > gapMs;
-        const dropped = prev && breakOnReset && (getY(p) < getY(prev) || getReset(p));
-        const breakHere = i === 0 || tooFar || dropped;
-        segs.push((breakHere ? 'M' : 'L') + x + ' ' + y);
+        // Known reset between prev and cur: both samples have resets_at ISO
+        // and the parsed timestamps differ by more than the tolerance. The
+        // tolerance kills false positives from API microsecond jitter on the
+        // same logical reset moment.
+        const prevIsoStr = prev ? getResetIso(prev) : null;
+        const curIsoStr = getResetIso(p);
+        const prevMs = isoMs(prevIsoStr);
+        const curMs = isoMs(curIsoStr);
+        const knownReset = prev && prevMs != null && curMs != null && Math.abs(prevMs - curMs) > RESET_ISO_TOLERANCE_MS;
+        if (knownReset && !tooFar) {
+          // Previous window's line ends at prev (already pushed). Start a fresh
+          // segment for the new window. With breakOnReset on, the new segment
+          // begins at the structural zero-crossing at the exact reset moment
+          // (= prev.resets_at_iso); with it off, it begins at the first post-
+          // reset sample directly.
+          if (breakOnReset) {
+            const rX = xOf(prevMs).toFixed(1);
+            const rY = yOf(0).toFixed(1);
+            segs.push('M' + rX + ' ' + rY);
+            segs.push('L' + x + ' ' + y);
+          } else {
+            segs.push('M' + x + ' ' + y);
+          }
+        } else {
+          const breakHere = i === 0 || tooFar;
+          segs.push((breakHere ? 'M' : 'L') + x + ' ' + y);
+        }
       }
       svg.appendChild(el('path', { d: segs.join(' '), fill: 'none', stroke: color, 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
     }
-    lineFor(p => p.week, p => p.weekWindowReset, 'url(#weekGrad)');
-    lineFor(p => p.five, p => p.fiveWindowReset, 'url(#fiveGrad)');
+    lineFor(p => p.week, p => p.weekResetsAtIso, 'url(#weekGrad)');
+    lineFor(p => p.five, p => p.fiveResetsAtIso, 'url(#fiveGrad)');
 
     // Two circles per turn (week + 5h) inside one <g class="point-group">,
     // so hover on the hit-area can highlight both at once via a single
@@ -794,11 +839,13 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
       const x = xOf(p.tsMs);
       const g = el('g', { class: 'point-group' });
       g.appendChild(el('circle', {
-        cx: x, cy: yOf(p.week), r: 3, fill: 'url(#weekGrad)',
+        cx: x, cy: yOf(p.week), r: 3,
+        fill: p.weekBugged ? '#e040ef' : 'url(#weekGrad)',
         stroke: 'var(--bg)', 'stroke-width': '1', 'pointer-events': 'none',
       }));
       g.appendChild(el('circle', {
-        cx: x, cy: yOf(p.five), r: 3, fill: 'url(#fiveGrad)',
+        cx: x, cy: yOf(p.five), r: 3,
+        fill: p.fiveBugged ? '#e040ef' : 'url(#fiveGrad)',
         stroke: 'var(--bg)', 'stroke-width': '1', 'pointer-events': 'none',
       }));
       svg.appendChild(g);
@@ -817,10 +864,15 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
       const halfL = prevX != null ? Math.min(MAX_HALF_PX, (cx - prevX) / 2) : MAX_HALF_PX;
       const halfR = nextX != null ? Math.min(MAX_HALF_PX, (nextX - cx) / 2) : MAX_HALF_PX;
       const tFmt = fmtDateTime(p.tsMs, days <= 1 ? 'time' : 'both');
-      const tip = '<b>' + tFmt + '</b><br>5h: <b>' + p.five.toFixed(1) + '%</b>' +
-        (p.fiveDelta != null ? ' (' + (p.fiveDelta > 0 ? '+' : '') + p.fiveDelta.toFixed(1) + ')' : '') +
-        '<br>week: <b>' + p.week.toFixed(1) + '%</b>' +
-        (p.weekDelta != null ? ' (' + (p.weekDelta > 0 ? '+' : '') + p.weekDelta.toFixed(1) + ')' : '');
+      const fivePart = p.fiveBugged
+        ? '5h: <span style="color:#e040ef"><b>' + p.five.toFixed(1) + '%</b> · last valid (API returned broken data)</span>'
+        : '5h: <b>' + p.five.toFixed(1) + '%</b>' +
+          (p.fiveDelta != null ? ' (' + (p.fiveDelta > 0 ? '+' : '') + p.fiveDelta.toFixed(1) + ')' : '');
+      const weekPart = p.weekBugged
+        ? 'week: <span style="color:#e040ef"><b>' + p.week.toFixed(1) + '%</b> · last valid (API returned broken data)</span>'
+        : 'week: <b>' + p.week.toFixed(1) + '%</b>' +
+          (p.weekDelta != null ? ' (' + (p.weekDelta > 0 ? '+' : '') + p.weekDelta.toFixed(1) + ')' : '');
+      const tip = '<b>' + tFmt + '</b><br>' + fivePart + '<br>' + weekPart;
       const hit = el('rect', {
         x: cx - halfL, y: PAD.top, width: halfL + halfR, height: PH,
         fill: 'transparent', 'pointer-events': 'all',
@@ -837,35 +889,61 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
       svg.appendChild(hit);
     }
 
-    // Forecast uses non-stale samples only — stale rows carry the previous
-    // valid % verbatim (parser fallback on API failure), so including them
-    // flattens dy toward zero and the slope stops reflecting real usage.
-    const fcVisible = visible.filter(p => !p.stale);
-    if (forecastInput.checked && fcVisible.length >= 2) {
-      function drawForecast(getY, color) {
-        const N = Math.min(5, fcVisible.length);
-        const last = fcVisible[fcVisible.length - 1];
-        const first = fcVisible[fcVisible.length - N];
+    // Forecast: per-window filter. Skip stale samples (no API data) and
+    // bugged samples for that specific window (impossible API reading);
+    // both cases carry forward the prior value, so including them would
+    // flatten dy toward zero and silence the trend line.
+    const fcVisibleFive = visible.filter(p => !p.stale && !p.fiveBugged);
+    const fcVisibleWeek = visible.filter(p => !p.stale && !p.weekBugged);
+    if (forecastInput.checked) {
+      function drawForecast(fc, getY, color, label) {
+        if (fc.length < 2) return;
+        const N = Math.min(5, fc.length);
+        const last = fc[fc.length - 1];
+        const first = fc[fc.length - N];
         const yLast = getY(last);
         const yFirst = getY(first);
         const dt = last.tsMs - first.tsMs;
         const dy = yLast - yFirst;
-        if (dt <= 0 || dy <= 0 || yLast >= 100) return;
-        const slope = dy / dt;
-        const t100 = last.tsMs + (100 - yLast) / slope;
-        const xEndMs = Math.min(t100, toMs);
-        if (xEndMs <= last.tsMs) return;
-        const yEnd = Math.min(100, yLast + slope * (xEndMs - last.tsMs));
+        if (dt <= 0 || yLast >= 100) return;
+        let xEndMs, yEnd, isFlat;
+        if (dy <= 0) {
+          // No upward trend in the last N samples — draw a horizontal at the
+          // current level with a tighter dash + label so the user sees the
+          // forecast is alive but has nothing to extrapolate yet.
+          isFlat = true;
+          xEndMs = toMs;
+          yEnd = yLast;
+        } else {
+          isFlat = false;
+          const slope = dy / dt;
+          const t100 = last.tsMs + (100 - yLast) / slope;
+          xEndMs = Math.min(t100, toMs);
+          if (xEndMs <= last.tsMs) return;
+          yEnd = Math.min(100, yLast + slope * (xEndMs - last.tsMs));
+        }
         svg.appendChild(el('line', {
           x1: xOf(last.tsMs), y1: yOf(yLast),
           x2: xOf(xEndMs), y2: yOf(yEnd),
           stroke: color, 'stroke-width': '2',
-          'stroke-dasharray': '6 4', 'stroke-opacity': '0.75',
+          'stroke-dasharray': isFlat ? '2 4' : '6 4',
+          'stroke-opacity': isFlat ? '0.55' : '0.75',
           'stroke-linecap': 'round',
         }));
+        if (isFlat) {
+          const t = el('text', {
+            x: xOf(xEndMs) - 4, y: yOf(yEnd) - 4,
+            'text-anchor': 'end',
+            'font-size': '10',
+            fill: 'var(--muted)',
+            'fill-opacity': '0.85',
+          });
+          t.textContent = label + ' — flat, no trend yet';
+          svg.appendChild(t);
+        }
       }
-      drawForecast(p => p.week, 'url(#weekGrad)');
-      drawForecast(p => p.five, 'url(#fiveGrad)');
+      drawForecast(fcVisibleWeek, p => p.week, 'url(#weekGrad)', 'week');
+      drawForecast(fcVisibleFive, p => p.five, 'url(#fiveGrad)', '5h');
     }
 
     if (activeSelection) {

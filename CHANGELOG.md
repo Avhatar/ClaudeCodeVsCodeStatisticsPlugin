@@ -5,6 +5,65 @@ User-visible changes only. For root causes, design decisions and internal mechan
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.0] - 2026-05-05
+### Fixed
+- The chart no longer draws a runaway zero-crossing line off the right side of every sample after a window reset. Cause: the API's `resets_at` timestamp jitters by microseconds sample-to-sample even within the same window, so strict string equality treated each sample as a fresh reset. The tolerance for "different reset moment" is now 60 seconds, matching the parser's existing reset-detection epsilon. Most visible with **Break on reset limit** on.
+
+## [0.64.0] - 2026-05-05
+### Changed
+- Bugged-API filter rewritten with two strict, deterministic rules — no thresholds besides `100%` itself, no pending state. With **Ignore bugged API data** on:
+  - If a sample reads exactly `100%` and the window just crossed a reset, force the value to `0%` (a fresh window structurally starts at zero).
+  - If a sample reads exactly `100%` mid-window and the previous reading was `≤ 70%`, carry forward the previous value.
+  - All other readings trusted — including legitimate near-saturation like `95%` or `99%` that the previous heuristic-style threshold would have wrongly flagged.
+
+## [0.63.0] - 2026-05-05
+### Fixed
+- When the API returns a bugged 100% on **two or more consecutive turns** right after a window reset (rare but observed today: `18:00:57` and `18:04:21` both got `5h 100%` after the 18:00 reset), the suppression now keeps applying for as long as the saturated values keep coming, instead of releasing on the very next sample and letting a 100% propagate forward into the new window. Only relevant when **Ignore bugged API data** is on.
+
+## [0.62.0] - 2026-05-05
+### Changed
+- The 2-hour line break introduced in 0.61 is now driven by the existing **Break line on gap** setting under the limits chart, with its default lowered from 8h to 2h. Set it to 0 to disable gap-based breaks; raise it to keep the line continuous across longer gaps.
+
+## [0.61.0] - 2026-05-05
+### Changed
+- Window resets on the chart are now drawn from the actual API timestamp (`resets_at`), no longer approximated from the per-sample countdown. Hook 0.46 starts logging the exact ISO; the install button bumps it for you. New entries get a precise dashed marker and zero-crossing at the real reset moment. Old log entries (pre-hook-0.46) don't carry the ISO and so don't draw a reset marker at all — separation between samples on either side of an unknown reset comes from a 2-hour time-gap break instead. Either way, no heuristic-based reset detection is used for chart visualization any more.
+
+## [0.60.0] - 2026-05-05
+### Changed
+- Lines no longer connect across window resets. The previous window's line ends at its last sample; the new window's line starts as its own segment. With **Break on reset limit** on, the new segment begins at the zero-crossing at the actual reset moment (the fresh window is structurally 0% there); with it off, the new segment starts directly at the first post-reset sample. Either way, no slope is drawn from old window to new.
+
+## [0.59.0] - 2026-05-05
+### Changed
+- The chart curve now drops to 0% at the actual moment of every window reset and rises again from there to the next sample — a fresh window starts at 0% by definition, so the curve passes through that zero crossing structurally. Both the limits chart panel and the sidebar mini chart get this. The dashed vertical reset marker also moved from the sample timestamp to the actual reset moment (computed from the sample's countdown), so marker and curve align exactly.
+
+## [0.58.0] - 2026-05-05
+### Fixed
+- The chart's window-reset markers no longer move depending on whether **Ignore bugged API data** is on or off. A reset is a physical event that happened at a specific moment — the dashed vertical line is now anchored to that sample regardless of toggle state. With the toggle on, the bugged value at the reset sample is still suppressed (magenta point at the carried-forward last-known value) and the next sample correctly shows the fresh window's first-turn delta.
+
+## [0.57.0] - 2026-05-05
+### Fixed
+- The chart no longer draws spurious dashed vertical "window reset" lines on bugged-API recovery turns (where the API returns a 100% spike mid-window and then drops back to the real low value). Same fix applies to the **Break on reset limit** option — it stopped breaking the line on every value drop, only on real window flips. Mostly visible with **Ignore bugged API data** off.
+
+## [0.56.0] - 2026-05-05
+### Fixed
+- 0.55's reset-boundary suppression was too aggressive: the very first sample after every legitimate reset (including past days) was being marked magenta even when the new-window value was perfectly sane (e.g. 0–5%). Suppression now only kicks in when the value at the reset boundary is saturated (≥90%), which is the actual API-glitch pattern we're trying to catch. Sane reset values restore the 0.51 behaviour — windowReset marker, delta = first turn's spend.
+
+## [0.55.0] - 2026-05-05
+### Fixed
+- **Bugged-API filter now also catches the case where the API returns a glitched 100% on the very turn that crosses a 5h or weekly reset boundary.** Previously such a value slipped through (because a real window reset was simultaneously detected) and poisoned every following sample in the new window — they'd all be drawn at 100% in magenta even though the actual readings were fine. The reset boundary is now treated as a hard slice: the unreliable sample at the reset itself is suppressed, and the first real sample of the new window becomes the genuine "reset point" on the chart with the correct first-turn delta. With **Ignore bugged API data** off, behaviour is unchanged from 0.51.
+
+## [0.54.0] - 2026-05-05
+### Changed
+- Forecast no longer disappears silently when the last few readings are flat. If the limit isn't trending up (e.g. the same 2% across the last 5 turns), the forecast now draws a tight-dash horizontal line at the current level — labelled `flat, no trend yet` on the main chart panel — so the user sees the forecast is enabled but has nothing to extrapolate. The normal sloped projection still draws as soon as a real upward trend appears.
+
+## [0.53.0] - 2026-05-05
+### Changed
+- The **Ignore bugged API data** toggle moved from VS Code's standard Settings UI to the sidebar's Settings dropdown, alongside Show USD spent and VS Code skin support — easier to discover and to flip on the fly. The detailed explanation now lives in the row's hover tooltip. Default stays ON.
+
+## [0.52.0] - 2026-05-05
+### Added
+- New setting **Ignore Bugged API Data** (default on). When Anthropic's rate-limit endpoint returns an obviously impossible value for a window (e.g. `week 100%` mid-window after a string of `0%` readings, with no countdown reset), only that specific window is suppressed and the previous valid value is shown instead — no holes in the timeline. The other window (5h vs week) and the per-turn token counts are unaffected, so token logging and the still-good limit keep updating normally. On the chart panel, suppressed points are drawn in **magenta** and the tooltip explicitly says "last valid (API returned broken data)" for that window. The raw log file is left untouched.
+
 ## [0.51.0] - 2026-05-05
 ### Fixed
 - The first turn after a 5h or weekly window reset now shows its spend in the sidebar Last Turn card, the limit-bar delta line, and the status bar. Previously the delta was hidden as "window reset / new window" with no number, even though the chart drew it. The daily summary now includes that turn's spend in the day's total too.
