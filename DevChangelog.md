@@ -11,6 +11,13 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 The entire 0.x range was developed iteratively in a single working session
 (2026-05-02) — versions are very granular by design.
 
+## [0.66.0] - 2026-05-06
+### Changed
+- Weekly forecast trend baseline switched from "last N=5 samples" to "every sample sharing the latest sample's `weekResetsAtIso`" (i.e. the entire current week window). User report: 5-6 turns today plus a few yesterday, week showed `flat — no trend yet`. Cause: the API returns `week %` rounded to one decimal, and a handful of small turns within a single day frequently leaves all 5 most-recent samples reading the same float (e.g. all `14.0%`) → `dy === 0` → `dy <= 0` branch fires → flat label. Yesterday's `12.x%` carried the real signal but never participated. New baseline pulls every prior sample with the same week-reset-at-iso (60s tolerance, matching `RESET_ISO_TOLERANCE_MS`) so any non-trivial change since the start of the current weekly window now drives the trend.
+- Implementation: new `pickFirst(fc, mode, getResetIso)` helper inside `drawForecast` (chartView.ts) and `fcLine` (webview.ts mini chart). `mode='windowed'` walks back through `fc` while `isoMs(getResetIso(fc[i]))` stays within tolerance of the latest; `mode='recent'` keeps the prior `fc[fc.length - N]` behavior. Falls back to `recent` (a) when the latest sample's reset_at_iso is null (older log entries pre-hook 0.46), (b) when only one sample sits in the current window — guarantees we still have two distinct points for the slope. The 5h forecast keeps `mode='recent'` because a 5h window doesn't span across yesterday in any useful sense; the windowed treatment would just be the same set most of the time, and on the boundary we'd want recency anyway.
+- The flat-branch text label is unchanged. With the wider baseline, true flat (zero net usage during the entire current week window) is now actually rare, which is the desired outcome.
+- Two-copy update: same logic in both `src/chartView.ts` (limits chart panel webview, inline JS inside template literal) and `src/webview.ts` (sidebar mini chart, TS body). Per CLAUDE.md multi-copy rule.
+
 ## [0.65.0] - 2026-05-05
 ### Fixed
 - Visible chart breakage on the user's first session after hook 0.46 was active: every post-reset sample drew its own line stretching off to the right of the chart. Cause is the API's `resets_at` field — Anthropic returns it with microsecond precision and the sub-second part jitters arbitrarily sample-to-sample even when the underlying window hasn't changed. Sample inspection of [usage-log.txt](C:/Users/Avhatar/.claude/usage-log.txt):

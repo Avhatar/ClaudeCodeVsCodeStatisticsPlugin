@@ -896,11 +896,34 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
     const fcVisibleFive = visible.filter(p => !p.stale && !p.fiveBugged);
     const fcVisibleWeek = visible.filter(p => !p.stale && !p.weekBugged);
     if (forecastInput.checked) {
-      function drawForecast(fc, getY, color, label) {
-        if (fc.length < 2) return;
+      // Pick the trend baseline. mode='recent' takes the last N samples (good
+      // for the 5h line — short window, recent rate is the right info).
+      // mode='windowed' walks back through every sample sharing the latest
+      // sample's reset_at_iso (same usage window), so a long-running line like
+      // weekly captures yesterday's points even when today's handful of turns
+      // barely moved the API-rounded percentage. Falls back to N=5 when the
+      // ISO field is unavailable (older log entries) or only one sample sits
+      // in the current window.
+      function pickFirst(fc, mode, getResetIso) {
         const N = Math.min(5, fc.length);
+        if (mode !== 'windowed' || !getResetIso) return fc[fc.length - N];
         const last = fc[fc.length - 1];
-        const first = fc[fc.length - N];
+        const lastResetMs = isoMs(getResetIso(last));
+        if (lastResetMs == null) return fc[fc.length - N];
+        let firstIdx = fc.length - 1;
+        for (let i = fc.length - 2; i >= 0; i--) {
+          const rms = isoMs(getResetIso(fc[i]));
+          if (rms == null) break;
+          if (Math.abs(rms - lastResetMs) > RESET_ISO_TOLERANCE_MS) break;
+          firstIdx = i;
+        }
+        if (firstIdx === fc.length - 1) return fc[fc.length - N];
+        return fc[firstIdx];
+      }
+      function drawForecast(fc, getY, color, label, mode, getResetIso) {
+        if (fc.length < 2) return;
+        const last = fc[fc.length - 1];
+        const first = pickFirst(fc, mode, getResetIso);
         const yLast = getY(last);
         const yFirst = getY(first);
         const dt = last.tsMs - first.tsMs;
@@ -942,8 +965,8 @@ export function renderChartHtml(nonce: string, data: ChartData, settings: ChartS
           svg.appendChild(t);
         }
       }
-      drawForecast(fcVisibleWeek, p => p.week, 'url(#weekGrad)', 'week');
-      drawForecast(fcVisibleFive, p => p.five, 'url(#fiveGrad)', '5h');
+      drawForecast(fcVisibleWeek, p => p.week, 'url(#weekGrad)', 'week', 'windowed', p => p.weekResetsAtIso);
+      drawForecast(fcVisibleFive, p => p.five, 'url(#fiveGrad)', '5h', 'recent');
     }
 
     if (activeSelection) {

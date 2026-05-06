@@ -5,6 +5,10 @@ User-visible changes only. For root causes, design decisions and internal mechan
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.0] - 2026-05-06
+### Changed
+- Weekly forecast trend now uses every visible sample sharing the latest weekly reset (i.e. the whole current week window) instead of just the last 5 turns. Yesterday's points participate now, so the trend stops reading "flat" on days when today's handful of small turns barely move the API-rounded weekly percentage. The 5h forecast keeps its last-5-samples behavior — short window, recent rate is the right input.
+
 ## [0.65.0] - 2026-05-05
 ### Fixed
 - The chart no longer draws a runaway zero-crossing line off the right side of every sample after a window reset. Cause: the API's `resets_at` timestamp jitters by microseconds sample-to-sample even within the same window, so strict string equality treated each sample as a fresh reset. The tolerance for "different reset moment" is now 60 seconds, matching the parser's existing reset-detection epsilon. Most visible with **Break on reset limit** on.

@@ -689,11 +689,30 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
   const fcVisibleWeek = visible.filter(p => !p.stale && !p.weekBugged);
   let forecastPath = '';
   if (s.forecast) {
-    function fcLine(fc: typeof visible, getY: (p: ParsedSample) => number, color: string): string {
-      if (fc.length < 2) return '';
+    // mode='windowed' uses every sample sharing the latest reset_at_iso (same
+    // usage window), so the weekly trend includes yesterday's points where
+    // today's API-rounded percentage barely moves. mode='recent' keeps the
+    // last N=5 samples — appropriate for the 5h line.
+    function pickFirst(fc: typeof visible, mode: 'recent' | 'windowed', getResetIso?: (p: ParsedSample) => string | null) {
       const N = Math.min(5, fc.length);
+      if (mode !== 'windowed' || !getResetIso) return fc[fc.length - N];
       const last = fc[fc.length - 1];
-      const first = fc[fc.length - N];
+      const lastResetMs = isoMs(getResetIso(last));
+      if (lastResetMs == null) return fc[fc.length - N];
+      let firstIdx = fc.length - 1;
+      for (let i = fc.length - 2; i >= 0; i--) {
+        const rms = isoMs(getResetIso(fc[i]));
+        if (rms == null) break;
+        if (Math.abs(rms - lastResetMs) > RESET_ISO_TOLERANCE_MS) break;
+        firstIdx = i;
+      }
+      if (firstIdx === fc.length - 1) return fc[fc.length - N];
+      return fc[firstIdx];
+    }
+    function fcLine(fc: typeof visible, getY: (p: ParsedSample) => number, color: string, mode: 'recent' | 'windowed' = 'recent', getResetIso?: (p: ParsedSample) => string | null): string {
+      if (fc.length < 2) return '';
+      const last = fc[fc.length - 1];
+      const first = pickFirst(fc, mode, getResetIso);
       const dt = last.tsMs - first.tsMs;
       const dy = getY(last) - getY(first);
       const yLast = getY(last);
@@ -718,8 +737,8 @@ function renderMiniChart(samples: ParsedSample[], s: ChartSettings): string {
       const opacity = isFlat ? '0.5' : '0.7';
       return `<line x1="${xOf(last.tsMs).toFixed(1)}" y1="${yOf(yLast).toFixed(1)}" x2="${xOf(xEnd).toFixed(1)}" y2="${yOf(yEnd).toFixed(1)}" stroke="${color}" stroke-width="1" stroke-dasharray="${dash}" stroke-opacity="${opacity}"/>`;
     }
-    forecastPath += fcLine(fcVisibleWeek, p => p.week, 'url(#miniWeek)');
-    forecastPath += fcLine(fcVisibleFive, p => p.five, 'url(#miniFive)');
+    forecastPath += fcLine(fcVisibleWeek, p => p.week, 'url(#miniWeek)', 'windowed', p => p.weekResetsAtIso);
+    forecastPath += fcLine(fcVisibleFive, p => p.five, 'url(#miniFive)', 'recent');
   }
 
   const gridStops = [25, 50, 75]
