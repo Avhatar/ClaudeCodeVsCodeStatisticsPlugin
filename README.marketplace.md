@@ -36,6 +36,10 @@ This started as an open-source side project for friends and coworkers who use Cl
 - **Daily summary** view (markdown) with per-day spend totals, peaks, and reset counts.
 - **Bundled Stop hook** with one-click installation. The extension can deploy, update, and register the hook in `~/.claude/settings.json` for you. The hook reads the local transcript file to capture per-turn token counts and the model id, so cost calculations stay accurate without any extra network calls.
 
+## Screenshots
+
+<img src="https://raw.githubusercontent.com/Avhatar/ClaudeCodeVsCodeStatisticsPlugin/main/media/Screenshot1.png" alt="" width="957">
+
 ## Requirements
 
 - **Claude Code** installed and signed in (`/login`). The extension reads `~/.claude/.credentials.json` indirectly through the Stop hook — never directly.

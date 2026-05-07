@@ -24,3 +24,6 @@ README.md
 
 # Screenshots are for the GitHub README only:
 media/Screenshot*.png
+
+# Local Claude Code config (skills, settings) — never ship to Marketplace:
+.claude/**
