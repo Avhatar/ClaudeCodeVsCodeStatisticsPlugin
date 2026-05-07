@@ -15,12 +15,13 @@ This started as an open-source side project for friends and coworkers who use Cl
   - Per-turn and per-window USD cost (computed locally from a bundled `pricing.json`).
   - "New window" indicator when the parser detects a 5h/weekly window flip between two fetches (no more bogus `+56%` deltas across windows).
   - Mini limits chart and mini tokens chart, both clickable to open the matching full-size panel.
-  - Settings dropdown at the bottom for sidebar-controlled toggles (USD annotations, VS Code theme skin).
+  - Settings dropdown at the bottom for sidebar-controlled toggles (USD annotations, VS Code theme skin, ignore bugged API data).
 - **Status bar** indicator: `<icon> NN% (+ΔN%), MM% (+ΔM%)` — shows `(reset)` instead of a number when a new window just started.
 - **Limits chart panel** with:
   - Free-form day-range input (`1`, `2`, `7`, `(3)`, `1-7`, `3-7`).
   - Gradient lines whose color saturates from "almost empty" to "almost out".
   - Vertical markers for actual and predicted limit resets, including parser-flagged window flips.
+  - Suppressed bugged-API readings shown in magenta with an explanatory tooltip (when "Ignore bugged API data" is on).
   - Day-boundary verticals when the window spans more than one day.
   - Optional linear forecast to the projected exhaustion point.
   - "Focus on data" zoom that crops empty leading/trailing time.
