@@ -2,7 +2,7 @@
   "name": "claude-code-telemetry",
   "displayName": "Claude Code Telemetry",
   "description": "Open-source dashboard for Claude Code: limits, predicted resets, tokens, USD spend, and usage forecasts.",
-  "version": "0.66.2",
+  "version": "0.67.0",
   "publisher": "Avhatar",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -87,6 +87,18 @@
       {
         "command": "claudeUsage.showHookInvocationLog",
         "title": "Claude Usage: Show hook invocation log"
+      },
+      {
+        "command": "claudeUsage.openNodeJsInstall",
+        "title": "Claude Usage: Install Node.js (open nodejs.org)"
+      },
+      {
+        "command": "claudeUsage.checkNode",
+        "title": "Claude Usage: Recheck Node.js installation"
+      },
+      {
+        "command": "claudeUsage.openSettingsJson",
+        "title": "Claude Usage: Open Claude settings.json"
       }
     ],
     "menus": {

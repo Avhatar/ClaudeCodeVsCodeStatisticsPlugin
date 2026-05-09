@@ -5,6 +5,18 @@ User-visible changes only. For root causes, design decisions and internal mechan
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.0] - 2026-05-10
+### Added
+- The plugin now detects whether Node.js is installed before offering to register the Stop hook. Without Node, the sidebar shows an **Install Node.js** button (opens nodejs.org) and a **Recheck** action instead of an Install hook button that would silently fail.
+- Inline diagnostic panel in the sidebar when hook installation fails — shows the exact reason (no Node, permission denied on `~/.claude/`, locked or malformed `settings.json`, AV-blocked script copy, etc.) with tailored next-step hints, replacing the previous transient toasts.
+- New commands: `Claude Usage: Install Node.js (open nodejs.org)`, `Claude Usage: Recheck Node.js installation`, `Claude Usage: Open Claude settings.json`.
+
+### Changed
+- The hook command written into `~/.claude/settings.json` now uses the absolute path to your `node` executable instead of bare `node`. Closes the case where `node` is on your terminal's PATH but not on the PATH that Claude Code uses to spawn Stop hooks. Existing installations are upgraded in place the next time you click Install/Update hook.
+
+### Fixed
+- The hook installer no longer overwrites `~/.claude/settings.json` when the file contains JSON it can't parse (comments, trailing commas, truncation). Previously a parse failure silently coerced the file to `{}` and wrote our hook on top, wiping any other settings; now the install refuses and the sidebar explains what to fix.
+
 ## [0.66.0] - 2026-05-06
 ### Changed
 - Weekly forecast trend now uses every visible sample sharing the latest weekly reset (i.e. the whole current week window) instead of just the last 5 turns. Yesterday's points participate now, so the trend stops reading "flat" on days when today's handful of small turns barely move the API-rounded weekly percentage. The 5h forecast keeps its last-5-samples behavior — short window, recent rate is the right input.

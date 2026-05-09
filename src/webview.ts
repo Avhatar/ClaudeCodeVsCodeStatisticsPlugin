@@ -1,6 +1,7 @@
 import { UsageStats, ParsedSample } from './logSource';
 import { ChartSettings, TokensChartSettings, parseRange, windowFromRange, parseDur, midColor } from './chartLogic';
 import { PricingTable } from './pricing';
+import { InstallError, NodeInfo } from './hookSetup';
 
 export interface ViewState {
   stats: UsageStats | null;
@@ -8,6 +9,15 @@ export interface ViewState {
   lastFetchAt: string | null;
   hookOutdated: { installed: string | null; bundled: string } | null;
   hookRegistered: boolean;
+  // null = not checked yet, NodeInfo = found, false = checked and missing.
+  // Carrying the version lets the sidebar say "Node v20.11.0 detected" so the
+  // user knows the diagnostic actually ran instead of trusting silence.
+  nodeInfo: NodeInfo | null | false;
+  // Surface of the most recent installHook() failure. Cleared after a
+  // successful install or when the user clicks Recheck. Using a structured
+  // error (not just a string) lets the renderer show different remediation
+  // hints per failure mode without parsing detail strings.
+  lastInstallError: InstallError | null;
 }
 
 export function renderHtml(
@@ -28,7 +38,7 @@ export function renderHtml(
       + renderTokensMiniChart(samples, tokensSettings, pricing)
       + renderSettings(settings, settingsOpen);
   } else if (state.error) {
-    body = renderError(state.error, state.hookRegistered);
+    body = renderError(state.error, state.hookRegistered, state.nodeInfo, state.lastInstallError);
   } else {
     body = renderLoading();
   }
@@ -291,6 +301,59 @@ export function renderHtml(
   }
   .update-banner a:hover { opacity: 0.9; }
   .update-banner .ver { color: #999; font-family: var(--vscode-editor-font-family, monospace); }
+  .err.diag {
+    text-align: left;
+    margin-top: 14px;
+    background: var(--bar-bg);
+    border: 1px solid var(--bar-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    color: var(--text);
+  }
+  .err.diag .diag-ttl {
+    color: var(--warn, #facc15);
+    font-weight: 600;
+    margin: 0 0 6px;
+    font-size: 13px;
+  }
+  .err.diag .diag-body {
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+  .err.diag code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: var(--text);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+  }
+  .err.diag .diag-detail {
+    background: rgba(0,0,0,0.25);
+    border: 1px solid var(--bar-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin: 6px 0;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 90px;
+    overflow: auto;
+  }
+  .err.diag .diag-actions { margin: 10px 0 4px; text-align: left; }
+  .err.diag .diag-hint {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--bar-border);
+  }
 </style>
 </head>
 <body class="${bodyClass}">
@@ -312,20 +375,48 @@ function renderUpdateBanner(info: { installed: string | null; bundled: string })
   </div>`;
 }
 
-function renderError(err: { code: string; detail?: string }, hookRegistered: boolean): string {
-  // Hook already registered but log file is absent: the Stop hook just hasn't
-  // fired yet. Show a friendly waiting state instead of pushing the user back
-  // to the install button — that was the source of the "I clicked install but
-  // the install button is still here" confusion.
+function renderError(
+  err: { code: string; detail?: string },
+  hookRegistered: boolean,
+  nodeInfo: NodeInfo | null | false,
+  lastInstallError: InstallError | null,
+): string {
+  // The most pressing failure to surface is the install error from the
+  // *previous* attempt — if the user just clicked Install hook and it
+  // bounced, they need to see why right here, not in a transient toast that
+  // disappeared while they were looking at another window.
+  if (lastInstallError) {
+    return renderInstallErrorPanel(lastInstallError);
+  }
+
+  // Hook already registered but log file is absent. Two sub-cases:
+  //  1. Node is gone / never was there — the Stop hook will never fire.
+  //     This is the silent-failure mode that prompted this whole diagnostic
+  //     pass; tell the user explicitly so they don't sit on the "waiting"
+  //     screen forever.
+  //  2. Node is present — the hook just hasn't fired yet (legitimate wait).
   if (err.code === 'no-log' && hookRegistered) {
+    if (nodeInfo === false) {
+      return renderInstallErrorPanel({ code: 'no-node' }, /* afterInstall */ true);
+    }
     return `<div class="err">
       <p>Hook installed</p>
       <div>Waiting for the first Claude Code turn — the log will populate as soon as a response completes.</div>
+      ${renderNodeHint(nodeInfo)}
+      <p style="margin-top:10px"><a href="command:claudeUsage.showHookInvocationLog">Show hook invocation log</a> &nbsp;·&nbsp; <a href="command:claudeUsage.checkNode">Recheck</a></p>
     </div>`;
   }
+
+  // Fresh install path: hook isn't registered yet. Decide which CTA to show
+  // based on whether node is on the system. Without node, sending the user
+  // to "Install hook" first is misleading — the install will refuse anyway.
+  if (err.code === 'no-log' && nodeInfo === false) {
+    return renderInstallErrorPanel({ code: 'no-node' }, /* afterInstall */ false);
+  }
+
   const setupLink = `<p><a href="command:claudeUsage.setupHook" class="btn">Install hook</a> &nbsp; <a href="command:claudeUsage.showHookStatus">Status</a></p>`;
   const hint =
-    err.code === 'no-log' ? `Claude Code <b>Stop</b> hook is not configured — no usage log to read.${setupLink}` :
+    err.code === 'no-log' ? `Claude Code <b>Stop</b> hook is not configured — no usage log to read.${setupLink}${renderNodeHint(nodeInfo)}` :
     err.code === 'empty-log' ? 'Log file exists but contains no parseable lines yet. After Claude finishes one turn the log will be populated.' :
     'Unable to read Claude usage log.';
   return `<div class="err">
@@ -333,6 +424,120 @@ function renderError(err: { code: string; detail?: string }, hookRegistered: boo
     <div>${hint}</div>
     ${err.detail ? `<p style="font-size:11px;opacity:0.7">${escapeHtml(err.detail)}</p>` : ''}
   </div>`;
+}
+
+function renderNodeHint(nodeInfo: NodeInfo | null | false): string {
+  if (nodeInfo && typeof nodeInfo === 'object') {
+    return `<p style="font-size:10px;opacity:0.6;margin-top:8px">Node ${escapeHtml(nodeInfo.version)} detected at <code>${escapeHtml(nodeInfo.path)}</code></p>`;
+  }
+  return '';
+}
+
+// Inline diagnostic panel rendered in place of the usual sidebar content when
+// the most recent installHook() failed, OR when we already know node isn't
+// available so the hook can't run. Each error code gets a tailored body so the
+// user sees the actual cause and what to do, not a generic "install failed".
+function renderInstallErrorPanel(err: InstallError, afterInstall = false): string {
+  const settingsPath = '~/.claude/settings.json';
+  const hookDir = '~/.claude/hooks/';
+  switch (err.code) {
+    case 'no-node':
+      return `<div class="err diag">
+        <p class="diag-ttl">Node.js not found</p>
+        <div class="diag-body">
+          The Stop hook is a Node.js script. Without Node on PATH, Claude Code can't run it
+          and this sidebar will never receive data.
+        </div>
+        <p class="diag-actions">
+          <a href="command:claudeUsage.openNodeJsInstall" class="btn">Install Node.js</a>
+          &nbsp;<a href="command:claudeUsage.checkNode">Recheck</a>
+        </p>
+        <div class="diag-hint">
+          After installing Node, re-open VS Code (or run "Developer: Reload Window") so the new PATH is picked up,
+          then click Recheck${afterInstall ? '' : ' or Install hook'}.
+        </div>
+      </div>`;
+
+    case 'bundled-missing':
+      return `<div class="err diag">
+        <p class="diag-ttl">Bundled hook script missing</p>
+        <div class="diag-body">
+          The plugin couldn't find its own hook script at <code>${escapeHtml(err.detail)}</code>.
+          This usually means the extension was installed incompletely.
+        </div>
+        <p class="diag-actions">
+          <a href="command:claudeUsage.showLog">Show plugin log</a>
+        </p>
+        <div class="diag-hint">Try reinstalling the extension from the Marketplace.</div>
+      </div>`;
+
+    case 'script-copy':
+      return `<div class="err diag">
+        <p class="diag-ttl">Couldn't copy hook script</p>
+        <div class="diag-body">
+          Failed to write the hook script into <code>${escapeHtml(hookDir)}</code>.
+          ${permissionsHint(err.detail)}
+        </div>
+        <pre class="diag-detail">${escapeHtml(err.detail)}</pre>
+        <p class="diag-actions">
+          <a href="command:claudeUsage.setupHook" class="btn">Try again</a>
+          &nbsp;<a href="command:claudeUsage.showHookStatus">Status</a>
+        </p>
+        <div class="diag-hint">
+          On Windows, antivirus software occasionally blocks scripts being written into <code>~/.claude/hooks/</code>.
+          Check Defender / your AV quarantine if "Try again" keeps failing.
+        </div>
+      </div>`;
+
+    case 'settings-read':
+      return `<div class="err diag">
+        <p class="diag-ttl">Can't parse <code>${escapeHtml(settingsPath)}</code></p>
+        <div class="diag-body">
+          The plugin refused to overwrite your settings file because it isn't valid JSON
+          (likely contains comments, trailing commas, or got truncated).
+          Overwriting would have wiped your other Claude Code settings.
+        </div>
+        <pre class="diag-detail">${escapeHtml(err.detail)}</pre>
+        <p class="diag-actions">
+          <a href="command:claudeUsage.openSettingsJson" class="btn">Open settings.json</a>
+          &nbsp;<a href="command:claudeUsage.setupHook">Try again</a>
+        </p>
+        <div class="diag-hint">
+          Fix the syntax errors in settings.json (Claude Code's own <code>/hooks</code> command can also rewrite it cleanly), then click Try again.
+        </div>
+      </div>`;
+
+    case 'settings-write':
+      return `<div class="err diag">
+        <p class="diag-ttl">Couldn't write <code>${escapeHtml(settingsPath)}</code></p>
+        <div class="diag-body">
+          ${permissionsHint(err.detail)}
+        </div>
+        <pre class="diag-detail">${escapeHtml(err.detail)}</pre>
+        <p class="diag-actions">
+          <a href="command:claudeUsage.openSettingsJson" class="btn">Open settings.json</a>
+          &nbsp;<a href="command:claudeUsage.setupHook">Try again</a>
+        </p>
+      </div>`;
+  }
+}
+
+function permissionsHint(detail: string): string {
+  const d = detail.toLowerCase();
+  if (d.includes('eacces') || d.includes('eperm') || d.includes('permission')) {
+    return `Permission denied. The user that VS Code is running as can't write into your Claude config directory.
+            Check folder permissions on <code>~/.claude/</code>; on Windows, try taking ownership if it lives under a corporate-managed profile.`;
+  }
+  if (d.includes('ebusy') || d.includes('locked')) {
+    return `The file is locked by another process. Close any editor that has it open and try again.`;
+  }
+  if (d.includes('enospc')) {
+    return `No space left on the disk holding your home directory.`;
+  }
+  if (d.includes('erofs') || d.includes('read-only')) {
+    return `The filesystem under <code>~/.claude/</code> is mounted read-only.`;
+  }
+  return `The OS rejected the write. See the detail below — most often it's a permission or AV-quarantine issue.`;
 }
 
 function renderSettings(settings: ChartSettings, open: boolean): string {

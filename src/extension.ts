@@ -7,7 +7,7 @@ import { renderDailySummaryMarkdownFromEntries } from './history';
 import { prepareChartData } from './chart';
 import { renderChartHtml } from './chartView';
 import { renderTokensHtml } from './tokensView';
-import { getHookStatus, installHook, uninstallHook, readHookVersion, HOOK_FILENAME } from './hookSetup';
+import { getHookStatus, installHook, uninstallHook, readHookVersion, HOOK_FILENAME, findNodeExecutable, NodeInfo, InstallError } from './hookSetup';
 import { ChartSettings, DEFAULT_CHART_SETTINGS, TokensChartSettings, DEFAULT_TOKENS_CHART_SETTINGS } from './chartLogic';
 import { loadPricing, PricingTable } from './pricing';
 
@@ -21,6 +21,16 @@ let hookOutdatedInfo: { installed: string | null; bundled: string } | null = nul
 let updatePromptShownThisSession = false;
 let pricingTable: PricingTable | null = null;
 let settingsOpen = false; // sidebar Settings dropdown — kept in extension memory so toggling an option doesn't collapse the section
+// Cached node detection result. `null` means "not checked yet" (forces a probe
+// on first use); `false` means we ran the probe and node wasn't found. We
+// re-probe whenever the user clicks Recheck or after a successful install,
+// not on every refresh — spawning child processes per-render would jitter the
+// sidebar on slow systems.
+let cachedNodeInfo: NodeInfo | null | false = null;
+// Surface of the most recent installHook() failure, surfaced inline in the
+// sidebar instead of a transient toast. Cleared on successful install or on
+// explicit Recheck.
+let lastInstallError: InstallError | null = null;
 function getSettings(): ChartSettings {
   const saved = extensionContext?.globalState.get<ChartSettings>(CHART_SETTINGS_KEY);
   return saved ? { ...DEFAULT_CHART_SETTINGS, ...saved } : DEFAULT_CHART_SETTINGS;
@@ -54,7 +64,16 @@ let logChannel: vscode.OutputChannel;
 let watcher: fs.FSWatcher | undefined;
 let debounce: NodeJS.Timeout | undefined;
 
-let currentState: ViewState = { stats: null, error: null, lastFetchAt: null, hookOutdated: null, hookRegistered: false };
+let currentState: ViewState = { stats: null, error: null, lastFetchAt: null, hookOutdated: null, hookRegistered: false, nodeInfo: null, lastInstallError: null };
+
+function getNodeInfo(forceRecheck = false): NodeInfo | false {
+  if (forceRecheck || cachedNodeInfo === null) {
+    const found = findNodeExecutable();
+    cachedNodeInfo = found ?? false;
+    log(`node detection: ${found ? `${found.version} at ${found.path}` : 'NOT FOUND'}`);
+  }
+  return cachedNodeInfo;
+}
 
 function log(msg: string) {
   if (!logChannel) return;
@@ -106,6 +125,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('claudeUsage.removeHook', () => doRemoveHook()),
     vscode.commands.registerCommand('claudeUsage.showHookStatus', () => showHookStatus()),
     vscode.commands.registerCommand('claudeUsage.showHookInvocationLog', () => showHookInvocationLog()),
+    vscode.commands.registerCommand('claudeUsage.openNodeJsInstall', () => openNodeJsInstall()),
+    vscode.commands.registerCommand('claudeUsage.checkNode', () => checkNodeAndRefresh()),
+    vscode.commands.registerCommand('claudeUsage.openSettingsJson', () => openSettingsJson()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('claudeUsage.logPath')) {
         startWatcher();
@@ -159,29 +181,32 @@ async function maybePromptUpdate() {
 
 async function doUpdateHook() {
   const bundled = bundledHookPath();
-  if (!fs.existsSync(bundled)) {
-    vscode.window.showErrorMessage(`Claude Usage: bundled hook script missing at ${bundled}`);
+  const result = installHook(bundled);
+  log(`updateHook: ok=${result.ok}, changed=${result.changed}, version=${result.status.installedVersion}` + (result.error ? `, error=${result.error.code}` : ''));
+
+  if (!result.ok && result.error) {
+    // Same inline-diagnostic flow as install. The update path can hit the
+    // same failure modes (no-node, settings-write, etc.) and the user
+    // benefits from seeing them in the sidebar instead of a toast.
+    lastInstallError = result.error;
+    if (result.error.code === 'no-node') cachedNodeInfo = false;
+    refresh();
     return;
   }
-  try {
-    const { changed, status } = installHook(bundled);
-    log(`updateHook: changed=${changed}, version=${status.installedVersion}`);
-    vscode.window.showInformationMessage(
-      changed
-        ? `Claude Usage: hook updated to ${status.installedVersion}. New turns will be logged with the new format.`
-        : 'Claude Usage: hook already up to date.'
-    );
-    computeHookOutdated(extensionContext);
-    // currentState.hookOutdated is a snapshot from the last refresh() — sync
-    // it now so the sidebar banner disappears on this re-render instead of
-    // lingering until the next log-driven refresh. Without this, users see the
-    // banner stay put after clicking "Update hook" and click again repeatedly.
-    currentState = { ...currentState, hookOutdated: hookOutdatedInfo };
-    panelProvider.update(currentState);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    vscode.window.showErrorMessage(`Claude Usage: hook update failed — ${msg}`);
-  }
+
+  lastInstallError = null;
+  vscode.window.showInformationMessage(
+    result.changed
+      ? `Claude Usage: hook updated to ${result.status.installedVersion}. New turns will be logged with the new format.`
+      : 'Claude Usage: hook already up to date.'
+  );
+  computeHookOutdated(extensionContext);
+  // currentState.hookOutdated is a snapshot from the last refresh() — sync
+  // it now so the sidebar banner disappears on this re-render instead of
+  // lingering until the next log-driven refresh. Without this, users see the
+  // banner stay put after clicking "Update hook" and click again repeatedly.
+  currentState = { ...currentState, hookOutdated: hookOutdatedInfo, lastInstallError };
+  panelProvider.update(currentState);
 }
 
 async function maybePromptSetup(context: vscode.ExtensionContext) {
@@ -198,6 +223,29 @@ async function maybePromptSetup(context: vscode.ExtensionContext) {
   }
 
   log(`maybePromptSetup: hook not registered; prompting`);
+
+  // Different prompt depending on whether Node.js is even available. Showing
+  // "Install hook" first when node isn't present sends the user down a dead-
+  // end path: install would refuse, the sidebar would show the no-node panel,
+  // and they'd be back where they started. Cut to the chase.
+  const node = getNodeInfo();
+  if (node === false) {
+    const choice = await vscode.window.showInformationMessage(
+      'Claude Usage Monitor needs Node.js — the Stop hook is a Node script. Install Node.js and the plugin will guide you through hook setup.',
+      'Install Node.js',
+      'I have Node, retry detection',
+      "Don't ask again"
+    );
+    if (choice === 'Install Node.js') {
+      openNodeJsInstall();
+    } else if (choice === 'I have Node, retry detection') {
+      checkNodeAndRefresh();
+    } else if (choice === "Don't ask again") {
+      context.globalState.update(SETUP_PROMPT_DECLINED_KEY, true);
+    }
+    return;
+  }
+
   const choice = await vscode.window.showInformationMessage(
     'Claude Usage Monitor: install Stop hook so the plugin can track API usage?',
     'Install hook',
@@ -207,45 +255,82 @@ async function maybePromptSetup(context: vscode.ExtensionContext) {
   if (choice === 'Install hook') {
     await doSetupHook(context);
   } else if (choice === 'Open settings.json') {
-    const sp = status.settingsPath;
-    if (fs.existsSync(sp)) {
-      const doc = await vscode.workspace.openTextDocument(sp);
-      vscode.window.showTextDocument(doc);
-    }
+    openSettingsJson();
   } else if (choice === "Don't ask again") {
     context.globalState.update(SETUP_PROMPT_DECLINED_KEY, true);
   }
 }
 
-async function doSetupHook(context: vscode.ExtensionContext) {
-  const bundled = path.join(context.extensionPath, 'media', 'hooks', HOOK_FILENAME);
-  if (!fs.existsSync(bundled)) {
-    vscode.window.showErrorMessage(`Claude Usage: bundled hook script missing at ${bundled}`);
+function openNodeJsInstall() {
+  vscode.env.openExternal(vscode.Uri.parse('https://nodejs.org/'));
+}
+
+async function checkNodeAndRefresh() {
+  const before = cachedNodeInfo;
+  const found = getNodeInfo(/* forceRecheck */ true);
+  if (found && typeof found === 'object') {
+    // Successful detection clears any prior no-node sticky error so the
+    // sidebar swings back to the regular install/wait flow on next render.
+    if (lastInstallError && lastInstallError.code === 'no-node') lastInstallError = null;
+    if (before === false || before === null) {
+      vscode.window.showInformationMessage(`Claude Usage: Node ${found.version} detected. You can install the hook now.`);
+    }
+  } else {
+    vscode.window.showWarningMessage(
+      'Claude Usage: still cannot find Node.js on PATH. After installing, you may need to reload VS Code (Developer: Reload Window) so the new PATH is picked up.'
+    );
+  }
+  refresh();
+}
+
+async function openSettingsJson() {
+  const sp = path.join(require('os').homedir(), '.claude', 'settings.json');
+  if (!fs.existsSync(sp)) {
+    vscode.window.showInformationMessage(`Claude Usage: settings.json not found at ${sp}.`);
     return;
   }
-  try {
-    const { changed, status } = installHook(bundled);
-    log(`setupHook: changed=${changed}, scriptInstalled=${status.scriptInstalled}, registered=${status.registered}`);
-    if (changed) {
-      vscode.window.showInformationMessage(
-        `Claude Usage: hook installed at ${status.scriptPath}. Run a turn in Claude Code — the log will start populating.`
-      );
-    } else {
-      vscode.window.showInformationMessage('Claude Usage: hook already configured.');
-    }
-    context.globalState.update(SETUP_PROMPT_DECLINED_KEY, undefined);
-    computeHookOutdated(context);
-    // Activation may have skipped wiring a watcher (no log file existed).
-    // Now that the hook is registered we want to pick up the very first
-    // turn that creates the log — restart so we either watch the file
-    // (if it now exists) or the parent dir (if the hook hasn't fired yet).
-    startWatcher();
+  const doc = await vscode.workspace.openTextDocument(sp);
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function doSetupHook(context: vscode.ExtensionContext) {
+  const bundled = path.join(context.extensionPath, 'media', 'hooks', HOOK_FILENAME);
+  const result = installHook(bundled);
+  log(`setupHook: ok=${result.ok}, changed=${result.changed}, registered=${result.status.registered}` + (result.error ? `, error=${result.error.code}` : ''));
+
+  if (!result.ok && result.error) {
+    // Inline-diagnostic flow: park the structured error in extension state,
+    // re-render the sidebar so renderInstallErrorPanel takes over with a
+    // tailored explanation + actions. Toasts are too transient — users miss
+    // them and end up retrying blindly.
+    lastInstallError = result.error;
+    // Re-probe node when the failure is "no-node" so a future Recheck click
+    // (or a retry after the user installs Node) reflects reality.
+    if (result.error.code === 'no-node') cachedNodeInfo = false;
     refresh();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`setupHook ERROR: ${msg}`);
-    vscode.window.showErrorMessage(`Claude Usage: hook setup failed — ${msg}`);
+    return;
   }
+
+  // Success path — clear any sticky failure and reset the "Don't ask again"
+  // flag so a future uninstall + reinstall cycle prompts again.
+  lastInstallError = null;
+  context.globalState.update(SETUP_PROMPT_DECLINED_KEY, undefined);
+  computeHookOutdated(context);
+
+  if (result.changed) {
+    vscode.window.showInformationMessage(
+      `Claude Usage: hook installed at ${result.status.scriptPath}. Run a turn in Claude Code — the log will start populating.`
+    );
+  } else {
+    vscode.window.showInformationMessage('Claude Usage: hook already configured.');
+  }
+
+  // Activation may have skipped wiring a watcher (no log file existed).
+  // Now that the hook is registered we want to pick up the very first
+  // turn that creates the log — restart so we either watch the file
+  // (if it now exists) or the parent dir (if the hook hasn't fired yet).
+  startWatcher();
+  refresh();
 }
 
 async function doRemoveHook() {
@@ -348,6 +433,12 @@ function startWatcher() {
 function refresh() {
   const p = getLogPath();
   const hookRegistered = getHookStatus().registered;
+  // Resolve node lazily on the first refresh that actually needs the
+  // information (i.e. when we'd be rendering an error or waiting state).
+  // For the happy path with stats + log present we still pass the cached
+  // value through so the sidebar can show "Node v… detected" if the user
+  // ever clicks Recheck from a healthy state.
+  const nodeInfo = cachedNodeInfo === null ? getNodeInfo() : cachedNodeInfo;
   if (!fs.existsSync(p)) {
     currentSamples = [];
     currentState = {
@@ -356,6 +447,8 @@ function refresh() {
       lastFetchAt: currentState.lastFetchAt,
       hookOutdated: hookOutdatedInfo,
       hookRegistered,
+      nodeInfo,
+      lastInstallError,
     };
     log(`refresh: log file does not exist`);
     panelProvider.update(currentState);
@@ -371,6 +464,8 @@ function refresh() {
       lastFetchAt: currentState.lastFetchAt,
       hookOutdated: hookOutdatedInfo,
       hookRegistered,
+      nodeInfo,
+      lastInstallError,
     };
     log(`refresh: no parseable lines`);
   } else {
@@ -385,6 +480,8 @@ function refresh() {
       lastFetchAt: sample.ts,
       hookOutdated: hookOutdatedInfo,
       hookRegistered,
+      nodeInfo,
+      lastInstallError,
     };
     log(`refresh: 5h=${sample.five}% (Δ${sample.fiveDelta}${sample.fiveWindowReset ? ' RESET' : ''}) week=${sample.week}% (Δ${sample.weekDelta}${sample.weekWindowReset ? ' RESET' : ''}) stale=${sample.stale} @ ${sample.ts}`);
   }

@@ -1,6 +1,6 @@
 # Claude Usage Monitor — Dev Notes
 
-> **Last updated:** 2026-05-06, against version **0.66.0**.
+> **Last updated:** 2026-05-10, against version **0.67.0**.
 > Bump this header when you revise the file so future-you knows whether it tracks the current code.
 
 VS Code extension that surfaces Claude Code subscription usage (5h / weekly windows) in a sidebar, status bar, and chart panel.

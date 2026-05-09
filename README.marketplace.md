@@ -43,7 +43,7 @@ This started as an open-source side project for friends and coworkers who use Cl
 ## Requirements
 
 - **Claude Code** installed and signed in (`/login`). The extension reads `~/.claude/.credentials.json` indirectly through the Stop hook — never directly.
-- **Node.js** on `PATH`. The Stop hook is a small Node script invoked by Claude Code on each `Stop` event.
+- **Node.js** on `PATH`. The Stop hook is a small Node script invoked by Claude Code on each `Stop` event. If Node isn't installed, the sidebar offers a one-click **Install Node.js** button (opens nodejs.org) before letting you set up the hook.
 - **VS Code 1.85+**.
 - Tested on Windows. The Stop hook is plain Node and should work on macOS / Linux as well, though paths in the documentation use Windows separators.
 
@@ -59,8 +59,11 @@ After install, the extension prompts on first activation:
 
 Pick **Install hook**. The extension will:
 
-1. Copy the bundled hook script to `~/.claude/hooks/`.
-2. Add an entry under `hooks.Stop[]` in `~/.claude/settings.json`.
+1. Detect Node.js on your machine (refusing to register a dead command if it isn't there).
+2. Copy the bundled hook script to `~/.claude/hooks/`.
+3. Add an entry under `hooks.Stop[]` in `~/.claude/settings.json`, using the **absolute path** to your `node` executable so the hook works regardless of which shell Claude Code uses to spawn hooks.
+
+If anything fails — Node missing, no permission to write `~/.claude/`, settings.json contains JSON the plugin can't parse — the sidebar shows an inline diagnostic panel with the exact reason and the next action you should take. No silent failures.
 
 Make a single turn in Claude Code; the log file `~/.claude/usage-log.txt` will start populating, and the sidebar will show usage immediately.
 
@@ -100,6 +103,9 @@ All commands are available via `Ctrl+Shift+P` / `Cmd+Shift+P`.
 | `Claude Usage: Remove Stop hook` | Unregister the hook (with optional script delete). |
 | `Claude Usage: Show hook status` | Modal showing hook installation status. |
 | `Claude Usage: Show hook invocation log` | Open the per-fire diagnostic log written by the hook. |
+| `Claude Usage: Install Node.js (open nodejs.org)` | Open the Node.js download page in your browser. |
+| `Claude Usage: Recheck Node.js installation` | Re-probe `node` after installing it without reloading VS Code. |
+| `Claude Usage: Open Claude settings.json` | Open `~/.claude/settings.json` in an editor tab. |
 
 ## How it works
 
@@ -137,6 +143,9 @@ Open and re-open the chart panel after a reload. If the issue persists, uninstal
 The most common cause is a stale Claude Code session that was already running before the hook was registered. Fully close Claude Code (or the IDE) and reopen, then make any turn.
 
 If the file still isn't appearing, run `Claude Usage: Show hook invocation log`. Each Stop event appends one line there with the hook's status. If the log doesn't exist or hasn't grown after a turn, Claude Code isn't calling the hook — verify with `Claude Usage: Show hook status`.
+
+**Sidebar says "Node.js not found".**
+The Stop hook is a Node.js script. Click **Install Node.js** in the panel, install Node 18+, then click **Recheck**. If Recheck still says missing after the install, run `Developer: Reload Window` so VS Code picks up the updated PATH.
 
 **The Stop hook doesn't seem to fire on every turn.**
 Some turn types (interruptions, certain agent loops) may not trigger a `Stop` event. The extension is resilient to gaps and rate-limit failures, so missing the occasional turn is fine.
